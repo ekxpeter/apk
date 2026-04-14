@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: facebook
+    description: Facebook Guard operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /fb/login:
+    post:
+      operationId: fbLogin
+      tags: [facebook]
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbLoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbLoginResponse"
+        "401":
+          description: Login failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/login-cookie:
+    post:
+      operationId: fbLoginCookie
+      tags: [facebook]
+      summary: Login with cookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbCookieLoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbLoginResponse"
+        "401":
+          description: Login failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/guard:
+    post:
+      operationId: fbToggleGuard
+      tags: [facebook]
+      summary: Toggle profile guard on or off
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbGuardRequest"
+      responses:
+        "200":
+          description: Guard toggled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbGuardResponse"
+        "400":
+          description: Failed to toggle guard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +107,63 @@ components:
           type: string
       required:
         - status
-
+    FbLoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+        - email
+        - password
+    FbCookieLoginRequest:
+      type: object
+      properties:
+        cookie:
+          type: string
+      required:
+        - cookie
+    FbLoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        userId:
+          type: string
+        name:
+          type: string
+      required:
+        - token
+        - userId
+        - name
+    FbGuardRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        enable:
+          type: boolean
+      required:
+        - token
+        - enable
+    FbGuardResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        isShielded:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - isShielded
+        - message
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message

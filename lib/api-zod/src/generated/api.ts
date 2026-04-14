@@ -14,3 +14,44 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Login with email and password
+ */
+export const FbLoginBody = zod.object({
+  email: zod.string(),
+  password: zod.string(),
+});
+
+export const FbLoginResponse = zod.object({
+  token: zod.string(),
+  userId: zod.string(),
+  name: zod.string(),
+});
+
+/**
+ * @summary Login with cookie
+ */
+export const FbLoginCookieBody = zod.object({
+  cookie: zod.string(),
+});
+
+export const FbLoginCookieResponse = zod.object({
+  token: zod.string(),
+  userId: zod.string(),
+  name: zod.string(),
+});
+
+/**
+ * @summary Toggle profile guard on or off
+ */
+export const FbToggleGuardBody = zod.object({
+  token: zod.string(),
+  enable: zod.boolean(),
+});
+
+export const FbToggleGuardResponse = zod.object({
+  success: zod.boolean(),
+  isShielded: zod.boolean(),
+  message: zod.string(),
+});

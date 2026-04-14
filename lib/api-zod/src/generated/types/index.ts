@@ -6,4 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./errorResponse";
+export * from "./fbCookieLoginRequest";
+export * from "./fbGuardRequest";
+export * from "./fbGuardResponse";
+export * from "./fbLoginRequest";
+export * from "./fbLoginResponse";
 export * from "./healthStatus";

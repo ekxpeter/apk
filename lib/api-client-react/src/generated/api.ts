@@ -5,18 +5,29 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  FbCookieLoginRequest,
+  FbGuardRequest,
+  FbGuardResponse,
+  FbLoginRequest,
+  FbLoginResponse,
+  HealthStatus,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -99,3 +110,261 @@ export function useHealthCheck<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Login with email and password
+ */
+export const getFbLoginUrl = () => {
+  return `/api/fb/login`;
+};
+
+export const fbLogin = async (
+  fbLoginRequest: FbLoginRequest,
+  options?: RequestInit,
+): Promise<FbLoginResponse> => {
+  return customFetch<FbLoginResponse>(getFbLoginUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbLoginRequest),
+  });
+};
+
+export const getFbLoginMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbLogin>>,
+    TError,
+    { data: BodyType<FbLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbLogin>>,
+  TError,
+  { data: BodyType<FbLoginRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbLogin"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbLogin>>,
+    { data: BodyType<FbLoginRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbLogin(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbLoginMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbLogin>>
+>;
+export type FbLoginMutationBody = BodyType<FbLoginRequest>;
+export type FbLoginMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Login with email and password
+ */
+export const useFbLogin = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbLogin>>,
+    TError,
+    { data: BodyType<FbLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbLogin>>,
+  TError,
+  { data: BodyType<FbLoginRequest> },
+  TContext
+> => {
+  return useMutation(getFbLoginMutationOptions(options));
+};
+
+/**
+ * @summary Login with cookie
+ */
+export const getFbLoginCookieUrl = () => {
+  return `/api/fb/login-cookie`;
+};
+
+export const fbLoginCookie = async (
+  fbCookieLoginRequest: FbCookieLoginRequest,
+  options?: RequestInit,
+): Promise<FbLoginResponse> => {
+  return customFetch<FbLoginResponse>(getFbLoginCookieUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbCookieLoginRequest),
+  });
+};
+
+export const getFbLoginCookieMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbLoginCookie>>,
+    TError,
+    { data: BodyType<FbCookieLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbLoginCookie>>,
+  TError,
+  { data: BodyType<FbCookieLoginRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbLoginCookie"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbLoginCookie>>,
+    { data: BodyType<FbCookieLoginRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbLoginCookie(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbLoginCookieMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbLoginCookie>>
+>;
+export type FbLoginCookieMutationBody = BodyType<FbCookieLoginRequest>;
+export type FbLoginCookieMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Login with cookie
+ */
+export const useFbLoginCookie = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbLoginCookie>>,
+    TError,
+    { data: BodyType<FbCookieLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbLoginCookie>>,
+  TError,
+  { data: BodyType<FbCookieLoginRequest> },
+  TContext
+> => {
+  return useMutation(getFbLoginCookieMutationOptions(options));
+};
+
+/**
+ * @summary Toggle profile guard on or off
+ */
+export const getFbToggleGuardUrl = () => {
+  return `/api/fb/guard`;
+};
+
+export const fbToggleGuard = async (
+  fbGuardRequest: FbGuardRequest,
+  options?: RequestInit,
+): Promise<FbGuardResponse> => {
+  return customFetch<FbGuardResponse>(getFbToggleGuardUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbGuardRequest),
+  });
+};
+
+export const getFbToggleGuardMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbToggleGuard>>,
+    TError,
+    { data: BodyType<FbGuardRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbToggleGuard>>,
+  TError,
+  { data: BodyType<FbGuardRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbToggleGuard"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbToggleGuard>>,
+    { data: BodyType<FbGuardRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbToggleGuard(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbToggleGuardMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbToggleGuard>>
+>;
+export type FbToggleGuardMutationBody = BodyType<FbGuardRequest>;
+export type FbToggleGuardMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Toggle profile guard on or off
+ */
+export const useFbToggleGuard = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbToggleGuard>>,
+    TError,
+    { data: BodyType<FbGuardRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbToggleGuard>>,
+  TError,
+  { data: BodyType<FbGuardRequest> },
+  TContext
+> => {
+  return useMutation(getFbToggleGuardMutationOptions(options));
+};

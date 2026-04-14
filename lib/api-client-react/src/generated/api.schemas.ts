@@ -8,3 +8,33 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface FbLoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface FbCookieLoginRequest {
+  cookie: string;
+}
+
+export interface FbLoginResponse {
+  token: string;
+  userId: string;
+  name: string;
+}
+
+export interface FbGuardRequest {
+  token: string;
+  enable: boolean;
+}
+
+export interface FbGuardResponse {
+  success: boolean;
+  isShielded: boolean;
+  message: string;
+}
+
+export interface ErrorResponse {
+  message: string;
+}
