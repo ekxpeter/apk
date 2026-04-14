@@ -6,9 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface FbPost {
+export interface FbVideo {
   id: string;
-  message: string;
+  title: string;
+  thumbnailUrl: string;
+  videoUrl: string;
+  permalink: string;
   createdTime: string;
-  permalink?: string;
 }

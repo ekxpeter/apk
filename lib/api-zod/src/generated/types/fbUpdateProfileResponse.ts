@@ -6,9 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface FbPost {
-  id: string;
+export interface FbUpdateProfileResponse {
+  success: boolean;
   message: string;
-  createdTime: string;
-  permalink?: string;
+  appliedFields: string[];
+  failedFields: string[];
 }

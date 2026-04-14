@@ -1,5 +1,16 @@
 import { Router, type Request, type Response } from "express";
-import { FbLoginBody, FbLoginCookieBody, FbToggleGuardBody } from "@workspace/api-zod";
+import {
+  FbCreatePostBody,
+  FbDeletePostsBody,
+  FbGetFriendsBody,
+  FbGetPostsBody,
+  FbGetProfileBody,
+  FbGetVideosBody,
+  FbLoginBody,
+  FbLoginCookieBody,
+  FbToggleGuardBody,
+  FbUpdateProfileBody,
+} from "@workspace/api-zod";
 import { randomBytes, randomUUID } from "crypto";
 import { logger } from "../lib/logger";
 
@@ -35,6 +46,17 @@ interface SessionData {
   accessToken?: string;
 }
 
+type Friend = { id: string; name: string; profileUrl: string; pictureUrl: string };
+type TimelinePost = { id: string; message: string; createdTime: string; permalink?: string };
+type VideoItem = {
+  id: string;
+  title: string;
+  thumbnailUrl: string;
+  videoUrl: string;
+  permalink: string;
+  createdTime: string;
+};
+
 function encodeSession(s: SessionData): string {
   return Buffer.from(JSON.stringify(s)).toString("base64");
 }
@@ -57,6 +79,24 @@ function parseCookieString(raw: string): Record<string, string> {
     if (key) result[key] = decodeURIComponent(val);
   }
   return result;
+}
+
+function decodeFbText(value: string): string {
+  return value
+    .replace(/\\\//g, "/")
+    .replace(/\\"/g, '"')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
+
+function absoluteFacebookUrl(pathOrUrl: string): string {
+  if (pathOrUrl.startsWith("http")) return pathOrUrl;
+  return `https://www.facebook.com${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
 }
 
 async function getUserInfoFromGraph(accessToken: string): Promise<{ id: string; name: string } | null> {
@@ -399,14 +439,19 @@ async function getProfileInfo(session: SessionData): Promise<{
   return { profilePicUrl, friendsCount, gender, postCount, parsedCookies };
 }
 
-async function getUserPosts(session: SessionData): Promise<Array<{ id: string; message: string; createdTime: string }>> {
-  const posts: Array<{ id: string; message: string; createdTime: string }> = [];
+async function getUserPosts(session: SessionData): Promise<TimelinePost[]> {
+  const posts: TimelinePost[] = [];
   const seen = new Set<string>();
 
-  const addPost = (id: string, message: string, createdTime: string) => {
+  const addPost = (id: string, message: string, createdTime: string, permalink?: string) => {
     if (id && !seen.has(id)) {
       seen.add(id);
-      posts.push({ id, message: message || "(no text)", createdTime });
+      posts.push({
+        id,
+        message: message || "(no text)",
+        createdTime,
+        permalink: permalink || `https://www.facebook.com/${id}`,
+      });
     }
   };
 
@@ -419,7 +464,7 @@ async function getUserPosts(session: SessionData): Promise<Array<{ id: string; m
       if (graphRes.ok) {
         const graphJson = await graphRes.json() as { data?: Array<{ id: string; message?: string; created_time: string }> };
         for (const p of graphJson?.data || []) {
-          addPost(p.id, p.message || "(no text)", p.created_time);
+          addPost(p.id, p.message || "(no text)", p.created_time, `https://www.facebook.com/${p.id}`);
         }
       }
     } catch (err) {
@@ -503,7 +548,8 @@ async function getUserPosts(session: SessionData): Promise<Array<{ id: string; m
                 node?.story?.message?.text || "";
               const ct = node?.creation_time || node?.created_time || 0;
               const createdTime = ct ? new Date(ct * 1000).toISOString() : new Date().toISOString();
-              addPost(postId, message, createdTime);
+              const permalink = node?.url || node?.permalink_url || node?.story?.url;
+              addPost(postId, message, createdTime, permalink);
             }
           }
         } catch { /* skip non-JSON */ }
@@ -531,20 +577,343 @@ async function getUserPosts(session: SessionData): Promise<Array<{ id: string; m
       const topLevelPattern = /"top_level_post_id":"(\d+)"/g;
 
       let m: RegExpExecArray | null;
-      while ((m = storyIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
-      while ((m = postIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
-      while ((m = topLevelPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+      while ((m = storyIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      while ((m = postIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      while ((m = topLevelPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
 
       // Also try extracting message text near story IDs
       // Look for fbid in share URLs
       const fbidPattern = /story_fbid=(\d+)/g;
-      while ((m = fbidPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+      while ((m = fbidPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
     } catch (err) {
       logger.error({ err }, "getUserPosts HTML scrape error");
     }
   }
 
   return posts.slice(0, 50); // Return max 50 posts
+}
+
+async function getFriends(session: SessionData): Promise<{ friends: Friend[]; total: number; message: string }> {
+  const friends: Friend[] = [];
+  const seen = new Set<string>();
+  const addFriend = (id: string, name: string, profileUrl?: string, pictureUrl?: string) => {
+    const cleanName = decodeFbText(name).replace(/\s+/g, " ");
+    if (!id || id === session.userId || !cleanName || seen.has(id)) return;
+    seen.add(id);
+    friends.push({
+      id,
+      name: cleanName,
+      profileUrl: profileUrl ? absoluteFacebookUrl(decodeFbText(profileUrl)) : `https://www.facebook.com/profile.php?id=${id}`,
+      pictureUrl: pictureUrl ? decodeFbText(pictureUrl) : `https://graph.facebook.com/${id}/picture?type=large`,
+    });
+  };
+
+  if (session.accessToken && !session.isCookieSession) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/me/friends?access_token=${session.accessToken}&fields=id,name,picture.type(large)&limit=5000`
+      );
+      const json = await res.json() as { data?: Array<{ id: string; name: string; picture?: { data?: { url?: string } } }>; summary?: { total_count?: number } };
+      for (const friend of json.data || []) {
+        addFriend(friend.id, friend.name, undefined, friend.picture?.data?.url);
+      }
+      return {
+        friends,
+        total: json.summary?.total_count || friends.length,
+        message: friends.length > 0 ? "Friends loaded." : "Facebook only exposes friends who also authorized this app for password-token sessions.",
+      };
+    } catch (err) {
+      logger.error({ err }, "getFriends graph error");
+    }
+  }
+
+  if (!session.isCookieSession || !session.cookie) {
+    return { friends, total: 0, message: "Friends can only be fetched from a valid cookie session." };
+  }
+
+  const urls = [
+    `https://mbasic.facebook.com/profile.php?v=friends&id=${session.userId}`,
+    `https://m.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+    `https://www.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: { ...BROWSER_HEADERS, cookie: session.cookie, "user-agent": DESKTOP_UA },
+        redirect: "follow",
+      });
+      const html = await res.text();
+      logger.info({ url, status: res.status, len: html.length }, "getFriends page");
+
+      const anchorPattern = /<a[^>]+href="([^"]*(?:profile\.php\?id=|\/friends\/hovercard\/mbasic\/\?uid=|facebook\.com\/)[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+      let match: RegExpExecArray | null;
+      while ((match = anchorPattern.exec(html)) !== null) {
+        const href = decodeFbText(match[1]);
+        const body = match[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        const idMatch = href.match(/(?:id=|uid=)(\d+)/) || href.match(/facebook\.com\/(\d+)/);
+        if (!idMatch) continue;
+        const name = decodeFbText(body);
+        if (name.length > 1 && name.length < 90 && !/friends|message|add|remove|follow/i.test(name)) {
+          addFriend(idMatch[1], name, href);
+        }
+      }
+
+      const jsonPattern = /"__typename":"User","id":"(\d+)"[\s\S]{0,300}?"name":"([^"]+)"/g;
+      while ((match = jsonPattern.exec(html)) !== null) {
+        addFriend(match[1], match[2]);
+      }
+
+      const picPattern = /"profile_picture":\{"uri":"([^"]+)"[\s\S]{0,160}?"id":"(\d+)"[\s\S]{0,120}?"name":"([^"]+)"/g;
+      while ((match = picPattern.exec(html)) !== null) {
+        addFriend(match[2], match[3], undefined, match[1]);
+      }
+
+      if (friends.length > 0) break;
+    } catch (err) {
+      logger.error({ err, url }, "getFriends scrape error");
+    }
+  }
+
+  return {
+    friends: friends.slice(0, 500),
+    total: friends.length,
+    message: friends.length > 0 ? `Loaded ${friends.length} friend(s).` : "No friends were returned by Facebook for this session.",
+  };
+}
+
+async function createPost(session: SessionData, message: string, privacy?: string): Promise<{ success: boolean; post?: TimelinePost; message: string }> {
+  const cleanMessage = message.trim();
+  if (!cleanMessage) return { success: false, message: "Post text is required." };
+
+  if (session.accessToken && !session.isCookieSession) {
+    try {
+      const body = new URLSearchParams({
+        access_token: session.accessToken,
+        message: cleanMessage,
+      });
+      if (privacy) body.set("privacy", JSON.stringify({ value: privacy }));
+      const res = await fetch("https://graph.facebook.com/me/feed", {
+        method: "POST",
+        body,
+      });
+      const text = await res.text();
+      logger.info({ status: res.status, body: text.substring(0, 300) }, "createPost graph");
+      const json = JSON.parse(text);
+      if (res.ok && json.id) {
+        return {
+          success: true,
+          post: { id: json.id, message: cleanMessage, createdTime: new Date().toISOString(), permalink: `https://www.facebook.com/${json.id}` },
+          message: "Post published successfully.",
+        };
+      }
+      return { success: false, message: json.error?.message || "Facebook rejected the post request." };
+    } catch (err) {
+      logger.error({ err }, "createPost graph error");
+      return { success: false, message: "Failed to publish post through the Graph API." };
+    }
+  }
+
+  if (!session.isCookieSession || !session.cookie) {
+    return { success: false, message: "Posting requires a valid cookie session." };
+  }
+
+  try {
+    const composerRes = await fetch("https://mbasic.facebook.com/", {
+      headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+      redirect: "follow",
+    });
+    const html = await composerRes.text();
+    const formMatch = html.match(/<form[^>]+method="post"[^>]+action="([^"]*(?:composer|mbasic)[^"]*)"[\s\S]*?<\/form>/i);
+    const formHtml = formMatch?.[0] || html;
+    const action = formMatch?.[1] ? decodeFbText(formMatch[1]) : "/composer/mbasic/";
+    const postUrl = action.startsWith("http") ? action : `https://mbasic.facebook.com${action.startsWith("/") ? action : `/${action}`}`;
+    const body = new URLSearchParams();
+    const inputPattern = /<input[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g;
+    let match: RegExpExecArray | null;
+    while ((match = inputPattern.exec(formHtml)) !== null) {
+      body.set(decodeFbText(match[1]), decodeFbText(match[2]));
+    }
+    body.set("xc_message", cleanMessage);
+    body.set("view_post", "Post");
+
+    const res = await fetch(postUrl, {
+      method: "POST",
+      headers: {
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": DESKTOP_UA,
+        origin: "https://mbasic.facebook.com",
+        referer: "https://mbasic.facebook.com/",
+      },
+      body: body.toString(),
+      redirect: "manual",
+    });
+    const text = await res.text().catch(() => "");
+    logger.info({ status: res.status, location: res.headers.get("location"), body: text.substring(0, 300) }, "createPost mbasic");
+    if ((res.status >= 200 && res.status < 400) && !text.includes("error") && !text.includes("checkpoint")) {
+      const location = res.headers.get("location") || "";
+      const idMatch = location.match(/(?:story_fbid=|fbid=|posts\/)(\d+)/) || text.match(/(?:story_fbid=|fbid=|post_id&quot;:&quot;)(\d+)/);
+      const id = idMatch?.[1] || `local-${Date.now()}`;
+      return {
+        success: true,
+        post: { id, message: cleanMessage, createdTime: new Date().toISOString(), permalink: id.startsWith("local-") ? "https://www.facebook.com/" : `https://www.facebook.com/${id}` },
+        message: "Post submitted to Facebook.",
+      };
+    }
+    return { success: false, message: "Facebook did not accept the post. The account may need verification or the cookie may be restricted." };
+  } catch (err) {
+    logger.error({ err }, "createPost cookie error");
+    return { success: false, message: "Failed to submit post with cookie session." };
+  }
+}
+
+async function updateProfile(session: SessionData, data: { name?: string; bio?: string; city?: string; work?: string; education?: string; relationship?: string; website?: string }): Promise<{ success: boolean; message: string; appliedFields: string[]; failedFields: string[] }> {
+  const requested = Object.entries(data).filter(([, value]) => typeof value === "string" && value.trim().length > 0);
+  const appliedFields: string[] = [];
+  const failedFields: string[] = [];
+
+  if (requested.length === 0) {
+    return { success: false, message: "Enter at least one profile field to update.", appliedFields, failedFields };
+  }
+
+  if (!session.isCookieSession || !session.cookie || !session.dtsg) {
+    return { success: false, message: "Profile editing requires a valid cookie session.", appliedFields, failedFields: requested.map(([key]) => key) };
+  }
+
+  const bio = data.bio?.trim();
+  if (bio) {
+    const docIds = ["2723531734265676", "7038184799578088", "9024454557584794"];
+    let bioApplied = false;
+    for (const docId of docIds) {
+      try {
+        const variables = JSON.stringify({
+          input: {
+            actor_id: session.userId,
+            bio,
+            client_mutation_id: randomUUID(),
+          },
+        });
+        const body = new URLSearchParams({
+          fb_dtsg: session.dtsg,
+          variables,
+          doc_id: docId,
+        });
+        const res = await fetch("https://www.facebook.com/api/graphql/", {
+          method: "POST",
+          headers: {
+            cookie: session.cookie,
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": DESKTOP_UA,
+            origin: "https://www.facebook.com",
+            referer: `https://www.facebook.com/profile.php?id=${session.userId}&sk=about`,
+          },
+          body: body.toString(),
+        });
+        const text = await res.text();
+        logger.info({ docId, status: res.status, body: text.substring(0, 300) }, "updateProfile bio");
+        if (res.ok && !text.includes('"errors"') && !text.includes('"error"')) {
+          bioApplied = true;
+          break;
+        }
+      } catch (err) {
+        logger.error({ err, docId }, "updateProfile bio error");
+      }
+    }
+    if (bioApplied) appliedFields.push("bio");
+    else failedFields.push("bio");
+  }
+
+  for (const [key] of requested) {
+    if (key !== "bio") failedFields.push(key);
+  }
+
+  const success = appliedFields.length > 0 && failedFields.length === 0;
+  const partial = appliedFields.length > 0 && failedFields.length > 0;
+  return {
+    success: appliedFields.length > 0,
+    message: success
+      ? "Profile updated successfully."
+      : partial
+        ? `Updated ${appliedFields.join(", ")}. Facebook rejected ${failedFields.join(", ")}.`
+        : "Facebook rejected the profile update. Some fields require Facebook's official settings pages or extra verification.",
+    appliedFields,
+    failedFields,
+  };
+}
+
+async function getVideos(session: SessionData): Promise<{ videos: VideoItem[]; message: string }> {
+  const videos: VideoItem[] = [];
+  const seen = new Set<string>();
+  const addVideo = (id: string, title: string, videoUrl: string, thumbnailUrl?: string, permalink?: string, createdTime?: string) => {
+    const decodedVideoUrl = decodeFbText(videoUrl);
+    if (!id || !decodedVideoUrl || seen.has(id)) return;
+    seen.add(id);
+    videos.push({
+      id,
+      title: decodeFbText(title || "Facebook video"),
+      thumbnailUrl: thumbnailUrl ? decodeFbText(thumbnailUrl) : "",
+      videoUrl: decodedVideoUrl,
+      permalink: permalink ? absoluteFacebookUrl(decodeFbText(permalink)) : `https://www.facebook.com/watch/?v=${id}`,
+      createdTime: createdTime || new Date().toISOString(),
+    });
+  };
+
+  if (session.accessToken && !session.isCookieSession) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/me/videos?access_token=${session.accessToken}&fields=id,description,created_time,source,picture,permalink_url&limit=25`
+      );
+      const json = await res.json() as { data?: Array<{ id: string; description?: string; created_time?: string; source?: string; picture?: string; permalink_url?: string }> };
+      for (const video of json.data || []) {
+        addVideo(video.id, video.description || "Facebook video", video.source || "", video.picture, video.permalink_url, video.created_time);
+      }
+    } catch (err) {
+      logger.error({ err }, "getVideos graph error");
+    }
+  }
+
+  if (session.isCookieSession && session.cookie) {
+    const urls = [
+      `https://www.facebook.com/profile.php?id=${session.userId}&sk=videos`,
+      `https://m.facebook.com/profile.php?id=${session.userId}&v=videos`,
+      "https://www.facebook.com/watch/",
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          headers: { ...BROWSER_HEADERS, cookie: session.cookie },
+          redirect: "follow",
+        });
+        const html = await res.text();
+        logger.info({ url, status: res.status, len: html.length }, "getVideos page");
+        const playablePattern = /"(?:playable_url_quality_hd|playable_url)":"([^"]+)"/g;
+        let match: RegExpExecArray | null;
+        while ((match = playablePattern.exec(html)) !== null) {
+          const near = html.slice(Math.max(0, match.index - 1500), match.index + 1500);
+          const idMatch = near.match(/"video_id":"?(\d+)/) || near.match(/"id":"(\d{8,})"/) || match[1].match(/(?:video_id=|v=)(\d+)/);
+          const titleMatch = near.match(/"name":"([^"]+)"/) || near.match(/"message":\{"text":"([^"]+)"/);
+          const thumbMatch = near.match(/"preferred_thumbnail":\{"image":\{"uri":"([^"]+)"/) || near.match(/"thumbnailImage":\{"uri":"([^"]+)"/);
+          const permalinkMatch = near.match(/"url":"([^"]*(?:watch|videos)[^"]+)"/);
+          addVideo(
+            idMatch?.[1] || `video-${videos.length + 1}`,
+            titleMatch?.[1] || "Facebook video",
+            match[1],
+            thumbMatch?.[1],
+            permalinkMatch?.[1],
+          );
+        }
+        if (videos.length > 0) break;
+      } catch (err) {
+        logger.error({ err, url }, "getVideos scrape error");
+      }
+    }
+  }
+
+  return {
+    videos: videos.slice(0, 25),
+    message: videos.length > 0 ? `Loaded ${videos.length} video(s).` : "No playable videos were returned by Facebook for this session.",
+  };
 }
 
 async function deletePost(session: SessionData, postId: string): Promise<boolean> {
@@ -806,13 +1175,13 @@ router.post("/fb/guard", async (req: Request, res: Response) => {
 });
 
 router.post("/fb/profile", async (req: Request, res: Response) => {
-  const { token } = req.body as { token?: string };
-  if (!token) {
-    res.status(400).json({ message: "token is required" });
+  const parsed = FbGetProfileBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
     return;
   }
 
-  const session = decodeSession(token);
+  const session = decodeSession(parsed.data.token);
   if (!session) {
     res.status(400).json({ message: "Invalid session token." });
     return;
@@ -828,13 +1197,13 @@ router.post("/fb/profile", async (req: Request, res: Response) => {
 });
 
 router.post("/fb/posts", async (req: Request, res: Response) => {
-  const { token } = req.body as { token?: string };
-  if (!token) {
-    res.status(400).json({ message: "token is required" });
+  const parsed = FbGetPostsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
     return;
   }
 
-  const session = decodeSession(token);
+  const session = decodeSession(parsed.data.token);
   if (!session) {
     res.status(400).json({ message: "Invalid session token." });
     return;
@@ -850,12 +1219,13 @@ router.post("/fb/posts", async (req: Request, res: Response) => {
 });
 
 router.post("/fb/delete-posts", async (req: Request, res: Response) => {
-  const { token, postIds } = req.body as { token?: string; postIds?: string[] };
-  if (!token || !postIds || !Array.isArray(postIds)) {
-    res.status(400).json({ message: "token and postIds are required" });
+  const parsed = FbDeletePostsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
     return;
   }
 
+  const { token, postIds } = parsed.data;
   const session = decodeSession(token);
   if (!session) {
     res.status(400).json({ message: "Invalid session token." });
@@ -872,6 +1242,92 @@ router.post("/fb/delete-posts", async (req: Request, res: Response) => {
   }
 
   res.json({ deleted, failed, message: `Deleted ${deleted} post(s), ${failed} failed.` });
+});
+
+router.post("/fb/friends", async (req: Request, res: Response) => {
+  const parsed = FbGetFriendsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const session = decodeSession(parsed.data.token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await getFriends(session));
+  } catch (err) {
+    logger.error({ err }, "friends route error");
+    res.status(500).json({ message: "Failed to fetch friends" });
+  }
+});
+
+router.post("/fb/profile/update", async (req: Request, res: Response) => {
+  const parsed = FbUpdateProfileBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { token, ...profileData } = parsed.data;
+  const session = decodeSession(token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await updateProfile(session, profileData));
+  } catch (err) {
+    logger.error({ err }, "update profile route error");
+    res.status(500).json({ message: "Failed to update profile" });
+  }
+});
+
+router.post("/fb/posts/create", async (req: Request, res: Response) => {
+  const parsed = FbCreatePostBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { token, message, privacy } = parsed.data;
+  const session = decodeSession(token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await createPost(session, message, privacy));
+  } catch (err) {
+    logger.error({ err }, "create post route error");
+    res.status(500).json({ message: "Failed to create post" });
+  }
+});
+
+router.post("/fb/videos", async (req: Request, res: Response) => {
+  const parsed = FbGetVideosBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const session = decodeSession(parsed.data.token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await getVideos(session));
+  } catch (err) {
+    logger.error({ err }, "videos route error");
+    res.status(500).json({ message: "Failed to fetch videos" });
+  }
 });
 
 export default router;

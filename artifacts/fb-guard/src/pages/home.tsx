@@ -1,36 +1,53 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
-  ShieldCheck,
-  ShieldOff,
-  LogOut,
-  Loader2,
-  KeyRound,
-  Cookie,
-  Users,
-  FileText,
-  User,
-  Trash2,
+  Briefcase,
   CheckSquare,
-  Square,
   ChevronDown,
   ChevronUp,
+  Cookie,
+  Edit3,
+  ExternalLink,
+  FileText,
+  GraduationCap,
+  Heart,
+  KeyRound,
+  Link2,
+  Loader2,
+  LogOut,
+  MapPin,
+  MessageCircle,
+  Moon,
+  Play,
   RefreshCw,
+  Send,
   Shield,
+  ShieldCheck,
+  ShieldOff,
+  Square,
+  Sun,
+  Trash2,
+  User,
+  Users,
+  Video,
 } from "lucide-react";
 import {
+  useFbCreatePost,
+  useFbDeletePosts,
+  useFbGetFriends,
+  useFbGetPosts,
+  useFbGetProfile,
+  useFbGetVideos,
   useFbLogin,
   useFbLoginCookie,
   useFbToggleGuard,
-  useFbGetProfile,
-  useFbGetPosts,
-  useFbDeletePosts,
+  useFbUpdateProfile,
 } from "@workspace/api-client-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Form,
@@ -40,10 +57,9 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { Separator } from "@/components/ui/separator";
-import { Badge } from "@/components/ui/badge";
 
 const emailLoginSchema = z.object({
   email: z.string().min(1, { message: "Email or phone is required" }),
@@ -54,13 +70,37 @@ const cookieLoginSchema = z.object({
   cookie: z.string().min(1, { message: "Cookie data is required" }),
 });
 
+const profileEditSchema = z.object({
+  name: z.string().optional(),
+  bio: z.string().optional(),
+  city: z.string().optional(),
+  work: z.string().optional(),
+  education: z.string().optional(),
+  relationship: z.string().optional(),
+  website: z.string().optional(),
+});
+
+const postSchema = z.object({
+  message: z.string().min(1, { message: "Post text is required" }),
+  privacy: z.string().optional(),
+});
+
 type AuthState = {
   token: string;
   userId: string;
   name: string;
 } | null;
 
-type Post = { id: string; message: string; createdTime: string };
+type Post = { id: string; message: string; createdTime: string; permalink?: string };
+type Friend = { id: string; name: string; profileUrl: string; pictureUrl: string };
+type VideoItem = {
+  id: string;
+  title: string;
+  thumbnailUrl: string;
+  videoUrl: string;
+  permalink: string;
+  createdTime: string;
+};
 type ProfileInfo = {
   profilePicUrl: string;
   friendsCount: number;
@@ -73,11 +113,39 @@ const FB_BLUE = "#1877F2";
 
 function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string | number }) {
   return (
-    <div className="flex flex-col items-center gap-1 bg-[#F0F2F5] rounded-xl p-3 flex-1">
+    <div className="flex flex-1 flex-col items-center gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/80">
       <div className="text-[#1877F2]">{icon}</div>
-      <span className="text-lg font-bold text-gray-800">{value}</span>
-      <span className="text-xs text-gray-500">{label}</span>
+      <span className="text-lg font-bold text-slate-900 dark:text-slate-100">{value}</span>
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
     </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="rounded-2xl border border-dashed border-slate-300 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">{text}</div>;
+}
+
+function ThemeToggle({ darkMode, onToggle }: { darkMode: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className={`relative flex h-10 w-[86px] items-center rounded-full border p-1 transition-all ${
+        darkMode ? "border-slate-600 bg-slate-800" : "border-slate-200 bg-white"
+      }`}
+      aria-label="Toggle dark mode"
+    >
+      <span
+        className={`absolute h-8 w-8 rounded-full shadow-md transition-transform ${
+          darkMode ? "translate-x-10 bg-slate-950" : "translate-x-0 bg-[#1877F2]"
+        }`}
+      />
+      <span className="z-10 flex h-8 w-8 items-center justify-center text-white">
+        <Sun className="h-4 w-4" />
+      </span>
+      <span className="z-10 ml-auto flex h-8 w-8 items-center justify-center text-slate-300">
+        <Moon className="h-4 w-4" />
+      </span>
+    </button>
   );
 }
 
@@ -86,10 +154,13 @@ export default function Home() {
   const [guardStatus, setGuardStatus] = useState<{ isShielded: boolean; message: string } | null>(null);
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [videos, setVideos] = useState<VideoItem[]>([]);
   const [selectedPosts, setSelectedPosts] = useState<Set<string>>(new Set());
-  const [showPosts, setShowPosts] = useState(false);
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
   const [showCookies, setShowCookies] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("fb-guard-theme") === "dark");
   const { toast } = useToast();
 
   const loginMutation = useFbLogin();
@@ -98,6 +169,10 @@ export default function Home() {
   const profileMutation = useFbGetProfile();
   const postsMutation = useFbGetPosts();
   const deletePostsMutation = useFbDeletePosts();
+  const friendsMutation = useFbGetFriends();
+  const updateProfileMutation = useFbUpdateProfile();
+  const createPostMutation = useFbCreatePost();
+  const videosMutation = useFbGetVideos();
 
   const emailForm = useForm<z.infer<typeof emailLoginSchema>>({
     resolver: zodResolver(emailLoginSchema),
@@ -109,82 +184,129 @@ export default function Home() {
     defaultValues: { cookie: "" },
   });
 
+  const profileForm = useForm<z.infer<typeof profileEditSchema>>({
+    resolver: zodResolver(profileEditSchema),
+    defaultValues: { name: "", bio: "", city: "", work: "", education: "", relationship: "", website: "" },
+  });
+
+  const postForm = useForm<z.infer<typeof postSchema>>({
+    resolver: zodResolver(postSchema),
+    defaultValues: { message: "", privacy: "SELF" },
+  });
+
+  const selectedVideo = useMemo(() => videos.find((video) => video.id === activeVideoId) ?? videos[0] ?? null, [activeVideoId, videos]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("fb-guard-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  const loadProfile = (token: string) => {
+    profileMutation.mutate(
+      { data: { token } },
+      {
+        onSuccess: (prof) => setProfile(prof),
+        onError: () => toast({ variant: "destructive", title: "Profile failed", description: "Could not load profile details." }),
+      },
+    );
+  };
+
   const onLoginSuccess = (data: { token: string; userId: string; name: string }) => {
     setAuth({ token: data.token, userId: data.userId, name: data.name });
     setGuardStatus(null);
     setProfile(null);
     setPosts([]);
+    setFriends([]);
+    setVideos([]);
     setSelectedPosts(new Set());
     toast({ title: "Logged in", description: `Welcome, ${data.name}` });
-    // Auto-load profile
-    setTimeout(() => {
-      profileMutation.mutate(
-        { data: { token: data.token } },
-        {
-          onSuccess: (prof) => setProfile(prof),
-          onError: () => {},
-        }
-      );
-    }, 100);
+    window.setTimeout(() => loadProfile(data.token), 100);
   };
 
   const onEmailSubmit = (values: z.infer<typeof emailLoginSchema>) => {
-    loginMutation.mutate({ data: values }, {
-      onSuccess: onLoginSuccess,
-      onError: (err) => {
-        toast({ variant: "destructive", title: "Login failed", description: err.message || "Failed to authenticate." });
+    loginMutation.mutate(
+      { data: values },
+      {
+        onSuccess: onLoginSuccess,
+        onError: (err) => toast({ variant: "destructive", title: "Login failed", description: err.message || "Failed to authenticate." }),
       },
-    });
+    );
   };
 
   const onCookieSubmit = (values: z.infer<typeof cookieLoginSchema>) => {
-    cookieLoginMutation.mutate({ data: values }, {
-      onSuccess: onLoginSuccess,
-      onError: (err) => {
-        toast({ variant: "destructive", title: "Login failed", description: err.message || "Failed to authenticate." });
+    cookieLoginMutation.mutate(
+      { data: values },
+      {
+        onSuccess: onLoginSuccess,
+        onError: (err) => toast({ variant: "destructive", title: "Login failed", description: err.message || "Failed to authenticate." }),
       },
-    });
+    );
   };
 
   const handleToggleGuard = (enable: boolean) => {
     if (!auth) return;
-    toggleGuardMutation.mutate({ data: { token: auth.token, enable } }, {
-      onSuccess: (data) => {
-        setGuardStatus({ isShielded: data.isShielded, message: data.message });
-        toast({
-          title: data.success ? (enable ? "Profile Guard Enabled" : "Profile Guard Disabled") : "Guard Toggle Failed",
-          description: data.message,
-          variant: data.success ? "default" : "destructive",
-        });
+    toggleGuardMutation.mutate(
+      { data: { token: auth.token, enable } },
+      {
+        onSuccess: (data) => {
+          setGuardStatus({ isShielded: data.isShielded, message: data.message });
+          toast({
+            title: data.success ? (enable ? "Profile Guard Enabled" : "Profile Guard Disabled") : "Guard Toggle Failed",
+            description: data.message,
+            variant: data.success ? "default" : "destructive",
+          });
+        },
+        onError: (err) => toast({ variant: "destructive", title: "Error", description: err.message || "Failed to toggle guard." }),
       },
-      onError: (err) => {
-        toast({ variant: "destructive", title: "Error", description: err.message || "Failed to toggle guard." });
-      },
-    });
+    );
   };
 
   const handleLoadPosts = () => {
     if (!auth) return;
-    postsMutation.mutate({ data: { token: auth.token } }, {
-      onSuccess: (data) => {
-        setPosts(data.posts);
-        setShowPosts(true);
-        if (data.posts.length === 0) {
-          toast({ title: "No posts found", description: "Could not retrieve posts from this account." });
-        }
+    postsMutation.mutate(
+      { data: { token: auth.token } },
+      {
+        onSuccess: (data) => {
+          setPosts(data.posts);
+          setSelectedPosts(new Set());
+          toast({ title: "Posts loaded", description: `${data.posts.length} post(s) returned.` });
+        },
+        onError: (err) => toast({ variant: "destructive", title: "Error", description: err.message || "Failed to load posts." }),
       },
-      onError: (err) => {
-        toast({ variant: "destructive", title: "Error", description: err.message || "Failed to load posts." });
+    );
+  };
+
+  const handleLoadFriends = () => {
+    if (!auth) return;
+    friendsMutation.mutate(
+      { data: { token: auth.token } },
+      {
+        onSuccess: (data) => {
+          setFriends(data.friends);
+          toast({ title: "Friends loaded", description: data.message });
+        },
+        onError: (err) => toast({ variant: "destructive", title: "Error", description: err.message || "Failed to load friends." }),
       },
-    });
+    );
+  };
+
+  const handleLoadVideos = () => {
+    if (!auth) return;
+    videosMutation.mutate(
+      { data: { token: auth.token } },
+      {
+        onSuccess: (data) => {
+          setVideos(data.videos);
+          setActiveVideoId(data.videos[0]?.id ?? null);
+          toast({ title: "Videos loaded", description: data.message });
+        },
+        onError: (err) => toast({ variant: "destructive", title: "Error", description: err.message || "Failed to load videos." }),
+      },
+    );
   };
 
   const handleSelectAll = () => {
-    if (selectedPosts.size === posts.length) {
-      setSelectedPosts(new Set());
-    } else {
-      setSelectedPosts(new Set(posts.map((p) => p.id)));
-    }
+    setSelectedPosts(selectedPosts.size === posts.length ? new Set() : new Set(posts.map((p) => p.id)));
   };
 
   const handleTogglePost = (id: string) => {
@@ -201,19 +323,43 @@ export default function Home() {
       { data: { token: auth.token, postIds } },
       {
         onSuccess: (result) => {
-          toast({
-            title: "Delete Complete",
-            description: result.message,
-            variant: result.failed > 0 ? "destructive" : "default",
-          });
-          // Remove deleted posts from local list
-          setPosts((prev) => prev.filter((p) => !selectedPosts.has(p.id)));
+          toast({ title: "Delete complete", description: result.message, variant: result.failed > 0 ? "destructive" : "default" });
+          if (result.deleted > 0) setPosts((prev) => prev.filter((p) => !selectedPosts.has(p.id)));
           setSelectedPosts(new Set());
         },
-        onError: (err) => {
-          toast({ variant: "destructive", title: "Delete failed", description: err.message });
+        onError: (err) => toast({ variant: "destructive", title: "Delete failed", description: err.message }),
+      },
+    );
+  };
+
+  const handleCreatePost = (values: z.infer<typeof postSchema>) => {
+    if (!auth) return;
+    createPostMutation.mutate(
+      { data: { token: auth.token, message: values.message, privacy: values.privacy || "SELF" } },
+      {
+        onSuccess: (result) => {
+          toast({ title: result.success ? "Post submitted" : "Post failed", description: result.message, variant: result.success ? "default" : "destructive" });
+          if (result.success && result.post) {
+            setPosts((prev) => [result.post as Post, ...prev]);
+            postForm.reset({ message: "", privacy: values.privacy || "SELF" });
+          }
         },
-      }
+        onError: (err) => toast({ variant: "destructive", title: "Post failed", description: err.message }),
+      },
+    );
+  };
+
+  const handleUpdateProfile = (values: z.infer<typeof profileEditSchema>) => {
+    if (!auth) return;
+    updateProfileMutation.mutate(
+      { data: { token: auth.token, ...values } },
+      {
+        onSuccess: (result) => {
+          toast({ title: result.success ? "Profile update sent" : "Profile update blocked", description: result.message, variant: result.success ? "default" : "destructive" });
+          if (result.success) loadProfile(auth.token);
+        },
+        onError: (err) => toast({ variant: "destructive", title: "Update failed", description: err.message }),
+      },
     );
   };
 
@@ -222,53 +368,49 @@ export default function Home() {
     setGuardStatus(null);
     setProfile(null);
     setPosts([]);
+    setFriends([]);
+    setVideos([]);
+    setActiveVideoId(null);
     setSelectedPosts(new Set());
-    setShowPosts(false);
     setImgError(false);
     emailForm.reset();
     cookieForm.reset();
+    profileForm.reset();
+    postForm.reset();
   };
 
   if (!auth) {
     return (
-      <div className="min-h-screen bg-[#F0F2F5] flex flex-col items-center justify-center p-4">
-        <div className="w-full max-w-md space-y-6">
-          {/* Header */}
-          <div className="text-center space-y-2">
-            <div className="flex items-center justify-center gap-3">
-              <div
-                className="w-12 h-12 rounded-full flex items-center justify-center"
-                style={{ backgroundColor: FB_BLUE }}
-              >
-                <Shield className="w-7 h-7 text-white" />
+      <div className="min-h-screen bg-[#F0F2F5] p-4 text-slate-900 dark:bg-[#18191A] dark:text-slate-100">
+        <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-md flex-col justify-center space-y-6">
+          <div className="flex justify-end">
+            <ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode((value) => !value)} />
+          </div>
+          <div className="space-y-2 text-center">
+            <div className="flex items-center justify-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1877F2] shadow-lg shadow-blue-500/20">
+                <Shield className="h-8 w-8 text-white" />
               </div>
             </div>
-            <h1 className="text-3xl font-bold text-gray-900">Facebook Guard Protection</h1>
-            <p className="text-gray-500 text-sm">Protect and manage your Facebook account</p>
+            <h1 className="text-3xl font-bold text-slate-950 dark:text-white">Facebook Guard Protection</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">Manage profile guard, friends, posts, profile, and videos</p>
           </div>
 
-          {/* Login Card */}
-          <Card className="shadow-lg border-0 rounded-2xl overflow-hidden">
+          <Card className="overflow-hidden rounded-3xl border-0 shadow-xl dark:bg-[#242526]">
             <CardContent className="p-6">
               <Tabs defaultValue="cookie" className="w-full">
-                <TabsList className="grid w-full grid-cols-2 mb-6 bg-[#F0F2F5] rounded-xl p-1">
-                  <TabsTrigger
-                    value="cookie"
-                    className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-[#1877F2] font-medium"
-                  >
-                    <Cookie className="w-4 h-4 mr-2" />
+                <TabsList className="mb-6 grid w-full grid-cols-2 rounded-2xl bg-slate-100 p-1 dark:bg-slate-800">
+                  <TabsTrigger value="cookie" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#1877F2] dark:data-[state=active]:bg-slate-700">
+                    <Cookie className="mr-2 h-4 w-4" />
                     Cookie Login
                   </TabsTrigger>
-                  <TabsTrigger
-                    value="email"
-                    className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-[#1877F2] font-medium"
-                  >
-                    <KeyRound className="w-4 h-4 mr-2" />
+                  <TabsTrigger value="email" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#1877F2] dark:data-[state=active]:bg-slate-700">
+                    <KeyRound className="mr-2 h-4 w-4" />
                     Password Login
                   </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="cookie" className="space-y-4">
+                <TabsContent value="cookie">
                   <Form {...cookieForm}>
                     <form onSubmit={cookieForm.handleSubmit(onCookieSubmit)} className="space-y-4">
                       <FormField
@@ -276,11 +418,11 @@ export default function Home() {
                         name="cookie"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel className="text-gray-700 font-medium">Facebook Cookie</FormLabel>
+                            <FormLabel>Facebook Cookie</FormLabel>
                             <FormControl>
                               <textarea
                                 placeholder="Paste your full Facebook cookie string here (c_user=...; xs=...;)"
-                                className="w-full min-h-[100px] p-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#1877F2] focus:border-transparent resize-none bg-white"
+                                className="min-h-[120px] w-full resize-none rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-[#1877F2] dark:border-slate-700 dark:bg-slate-900"
                                 {...field}
                               />
                             </FormControl>
@@ -288,75 +430,22 @@ export default function Home() {
                           </FormItem>
                         )}
                       />
-                      <Button
-                        type="submit"
-                        className="w-full h-12 text-base font-semibold rounded-xl"
-                        style={{ backgroundColor: FB_BLUE }}
-                        disabled={cookieLoginMutation.isPending}
-                      >
-                        {cookieLoginMutation.isPending ? (
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                        ) : (
-                          <Cookie className="w-5 h-5 mr-2" />
-                        )}
+                      <Button type="submit" className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]" disabled={cookieLoginMutation.isPending}>
+                        {cookieLoginMutation.isPending ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <Cookie className="mr-2 h-5 w-5" />}
                         {cookieLoginMutation.isPending ? "Connecting..." : "Login with Cookie"}
                       </Button>
                     </form>
                   </Form>
                 </TabsContent>
 
-                <TabsContent value="email" className="space-y-4">
+                <TabsContent value="email">
                   <Form {...emailForm}>
                     <form onSubmit={emailForm.handleSubmit(onEmailSubmit)} className="space-y-4">
-                      <FormField
-                        control={emailForm.control}
-                        name="email"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-gray-700 font-medium">Email or Phone</FormLabel>
-                            <FormControl>
-                              <Input
-                                placeholder="email@example.com or phone number"
-                                className="h-11 rounded-xl border-gray-200 focus-visible:ring-[#1877F2]"
-                                {...field}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={emailForm.control}
-                        name="password"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-gray-700 font-medium">Password</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="password"
-                                placeholder="••••••••"
-                                className="h-11 rounded-xl border-gray-200 focus-visible:ring-[#1877F2]"
-                                {...field}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
-                        Note: Facebook may block password logins from cloud servers. Use Cookie Login for best results.
-                      </div>
-                      <Button
-                        type="submit"
-                        className="w-full h-12 text-base font-semibold rounded-xl"
-                        style={{ backgroundColor: FB_BLUE }}
-                        disabled={loginMutation.isPending}
-                      >
-                        {loginMutation.isPending ? (
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                        ) : (
-                          <KeyRound className="w-5 h-5 mr-2" />
-                        )}
+                      <FormField control={emailForm.control} name="email" render={({ field }) => <FormItem><FormLabel>Email or Phone</FormLabel><FormControl><Input placeholder="email@example.com or phone number" className="h-11 rounded-2xl" {...field} /></FormControl><FormMessage /></FormItem>} />
+                      <FormField control={emailForm.control} name="password" render={({ field }) => <FormItem><FormLabel>Password</FormLabel><FormControl><Input type="password" placeholder="••••••••" className="h-11 rounded-2xl" {...field} /></FormControl><FormMessage /></FormItem>} />
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">Facebook may block password logins from cloud servers. Cookie Login usually works better.</div>
+                      <Button type="submit" className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]" disabled={loginMutation.isPending}>
+                        {loginMutation.isPending ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <KeyRound className="mr-2 h-5 w-5" />}
                         {loginMutation.isPending ? "Logging in..." : "Login with Password"}
                       </Button>
                     </form>
@@ -365,296 +454,175 @@ export default function Home() {
               </Tabs>
             </CardContent>
           </Card>
-
-          <p className="text-center text-xs text-gray-400">
-            Facebook Guard Protection &mdash; Secure account management tool
-          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#F0F2F5] p-4">
-      <div className="max-w-2xl mx-auto space-y-4">
-        {/* Top bar */}
-        <div className="flex items-center justify-between py-2">
-          <div className="flex items-center gap-2">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center"
-              style={{ backgroundColor: FB_BLUE }}
-            >
-              <Shield className="w-4 h-4 text-white" />
+    <div className="min-h-screen bg-[#F0F2F5] p-4 text-slate-900 dark:bg-[#18191A] dark:text-slate-100">
+      <div className="mx-auto max-w-5xl space-y-4">
+        <div className="sticky top-0 z-20 -mx-4 border-b border-slate-200 bg-[#F0F2F5]/95 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-[#18191A]/95">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#1877F2]"><Shield className="h-5 w-5 text-white" /></div>
+              <div className="min-w-0">
+                <p className="truncate font-bold">Facebook Guard Protection</p>
+                <p className="truncate text-xs text-slate-500 dark:text-slate-400">UID: {auth.userId}</p>
+              </div>
             </div>
-            <span className="font-bold text-gray-800">Facebook Guard Protection</span>
+            <div className="flex items-center gap-2">
+              <ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode((value) => !value)} />
+              <Button variant="outline" size="sm" onClick={handleLogout} className="rounded-2xl border-slate-200 dark:border-slate-700">
+                <LogOut className="mr-1 h-4 w-4" /> Logout
+              </Button>
+            </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleLogout}
-            className="rounded-xl border-gray-200 text-gray-600 hover:text-red-600 hover:border-red-200 hover:bg-red-50"
-          >
-            <LogOut className="w-4 h-4 mr-1" />
-            Logout
-          </Button>
         </div>
 
-        {/* Profile Card */}
-        <Card className="shadow-sm border-0 rounded-2xl overflow-hidden">
-          <CardContent className="p-6">
-            <div className="flex items-start gap-4">
-              {/* Profile Picture */}
-              <div className="relative flex-shrink-0">
-                {profile?.profilePicUrl && !imgError ? (
-                  <img
-                    src={profile.profilePicUrl}
-                    alt="Profile"
-                    className="w-20 h-20 rounded-full object-cover border-4 border-white shadow-md"
-                    onError={() => setImgError(true)}
-                  />
-                ) : (
-                  <div
-                    className="w-20 h-20 rounded-full flex items-center justify-center border-4 border-white shadow-md"
-                    style={{ backgroundColor: FB_BLUE }}
-                  >
-                    <User className="w-10 h-10 text-white" />
+        <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+          <div className="space-y-4">
+            <Card className="overflow-hidden rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+              <CardContent className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="relative shrink-0">
+                    {profile?.profilePicUrl && !imgError ? (
+                      <img src={profile.profilePicUrl} alt="Profile" className="h-24 w-24 rounded-full border-4 border-white object-cover shadow-md dark:border-slate-800" onError={() => setImgError(true)} />
+                    ) : (
+                      <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-white bg-[#1877F2] shadow-md dark:border-slate-800"><User className="h-12 w-12 text-white" /></div>
+                    )}
+                    {guardStatus?.isShielded && <div className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-green-500 dark:border-slate-800"><ShieldCheck className="h-5 w-5 text-white" /></div>}
                   </div>
-                )}
-                {guardStatus?.isShielded && (
-                  <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-green-500 rounded-full flex items-center justify-center border-2 border-white">
-                    <ShieldCheck className="w-4 h-4 text-white" />
+                  <div className="min-w-0 flex-1">
+                    <h2 className="truncate text-2xl font-bold">{auth.name}</h2>
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Connected account</p>
+                    {profileMutation.isPending && <p className="mt-2 flex items-center gap-1 text-xs text-[#1877F2]"><Loader2 className="h-3 w-3 animate-spin" /> Loading profile...</p>}
+                    {guardStatus && <Badge variant="outline" className={`mt-3 ${guardStatus.isShielded ? "border-green-300 bg-green-50 text-green-700 dark:bg-green-950/30" : "border-slate-300 bg-slate-50 text-slate-600 dark:bg-slate-800"}`}>{guardStatus.isShielded ? "Guard Active" : "Guard Inactive"}</Badge>}
                   </div>
-                )}
-              </div>
-
-              {/* Name & UID */}
-              <div className="flex-1 min-w-0">
-                <h2 className="text-xl font-bold text-gray-900 truncate">{auth.name}</h2>
-                <p className="text-sm text-gray-500 mt-0.5">UID: {auth.userId}</p>
-                {profileMutation.isPending && (
-                  <div className="flex items-center gap-1 mt-2 text-xs text-[#1877F2]">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Loading profile info...
-                  </div>
-                )}
-                {guardStatus && (
-                  <Badge
-                    className={`mt-2 text-xs ${guardStatus.isShielded ? "bg-green-100 text-green-700 border-green-200" : "bg-gray-100 text-gray-600 border-gray-200"}`}
-                    variant="outline"
-                  >
-                    {guardStatus.isShielded ? "🛡️ Guard Active" : "Guard Inactive"}
-                  </Badge>
-                )}
-              </div>
-            </div>
-
-            {/* Stats Row */}
-            {profile && (
-              <div className="flex gap-3 mt-5">
-                <StatCard
-                  icon={<Users className="w-5 h-5" />}
-                  label="Friends"
-                  value={profile.friendsCount > 0 ? profile.friendsCount.toLocaleString() : "—"}
-                />
-                <StatCard
-                  icon={<User className="w-5 h-5" />}
-                  label="Gender"
-                  value={profile.gender || "—"}
-                />
-                <StatCard
-                  icon={<FileText className="w-5 h-5" />}
-                  label="Posts"
-                  value={profile.postCount > 0 ? profile.postCount.toLocaleString() : "—"}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Cookie Info Card */}
-        {profile && Object.keys(profile.parsedCookies).length > 0 && (
-          <Card className="shadow-sm border-0 rounded-2xl overflow-hidden">
-            <CardHeader className="p-4 pb-0">
-              <button
-                className="flex items-center justify-between w-full text-left"
-                onClick={() => setShowCookies((v) => !v)}
-              >
-                <div className="flex items-center gap-2">
-                  <Cookie className="w-4 h-4 text-[#1877F2]" />
-                  <CardTitle className="text-sm font-semibold text-gray-700">Cookie Details</CardTitle>
                 </div>
-                {showCookies ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-              </button>
-            </CardHeader>
-            {showCookies && (
-              <CardContent className="p-4 pt-3">
-                <div className="grid grid-cols-1 gap-1 max-h-48 overflow-y-auto">
-                  {Object.entries(profile.parsedCookies).map(([key, val]) => (
-                    <div key={key} className="flex items-start gap-2 py-1.5 border-b border-gray-100 last:border-0">
-                      <span className="text-xs font-semibold text-[#1877F2] w-32 flex-shrink-0 truncate">{key}</span>
-                      <span className="text-xs text-gray-600 break-all">{val.length > 60 ? val.slice(0, 60) + "…" : val}</span>
-                    </div>
-                  ))}
+
+                {profile && (
+                  <div className="mt-6 grid grid-cols-3 gap-3">
+                    <StatCard icon={<Users className="h-5 w-5" />} label="Friends" value={profile.friendsCount > 0 ? profile.friendsCount.toLocaleString() : friends.length || "—"} />
+                    <StatCard icon={<User className="h-5 w-5" />} label="Gender" value={profile.gender || "—"} />
+                    <StatCard icon={<FileText className="h-5 w-5" />} label="Posts" value={posts.length || profile.postCount || "—"} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+              <CardContent className="p-6">
+                <h3 className="mb-1 flex items-center gap-2 font-semibold"><ShieldCheck className="h-5 w-5 text-[#1877F2]" /> Profile Guard</h3>
+                <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">Enable or disable Facebook Profile Guard.</p>
+                {guardStatus && <div className={`mb-4 rounded-2xl border p-3 text-sm ${guardStatus.isShielded ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800"}`}>{guardStatus.message}</div>}
+                <div className="grid grid-cols-2 gap-3">
+                  <Button onClick={() => handleToggleGuard(true)} disabled={toggleGuardMutation.isPending} className="h-11 rounded-2xl bg-[#1877F2] font-semibold hover:bg-[#0f66d4]">{toggleGuardMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />} Enable</Button>
+                  <Button onClick={() => handleToggleGuard(false)} disabled={toggleGuardMutation.isPending} variant="outline" className="h-11 rounded-2xl font-semibold"><ShieldOff className="mr-2 h-4 w-4" /> Disable</Button>
                 </div>
               </CardContent>
-            )}
-          </Card>
-        )}
+            </Card>
 
-        {/* Profile Guard Card */}
-        <Card className="shadow-sm border-0 rounded-2xl overflow-hidden">
-          <CardContent className="p-6">
-            <h3 className="font-semibold text-gray-800 mb-1 flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-[#1877F2]" />
-              Profile Guard
-            </h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Enable or disable the Facebook Profile Guard on your account.
-            </p>
-            {guardStatus && (
-              <div
-                className={`mb-4 p-3 rounded-xl text-sm ${
-                  guardStatus.isShielded
-                    ? "bg-green-50 text-green-700 border border-green-200"
-                    : "bg-gray-50 text-gray-600 border border-gray-200"
-                }`}
-              >
-                {guardStatus.message}
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                onClick={() => handleToggleGuard(true)}
-                disabled={toggleGuardMutation.isPending}
-                className="h-11 rounded-xl font-semibold"
-                style={{ backgroundColor: FB_BLUE }}
-              >
-                {toggleGuardMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <ShieldCheck className="w-4 h-4 mr-2" />
-                )}
-                Enable Guard
-              </Button>
-              <Button
-                onClick={() => handleToggleGuard(false)}
-                disabled={toggleGuardMutation.isPending}
-                variant="outline"
-                className="h-11 rounded-xl font-semibold border-gray-200 text-gray-700 hover:bg-gray-50"
-              >
-                {toggleGuardMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <ShieldOff className="w-4 h-4 mr-2" />
-                )}
-                Disable Guard
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Posts Management Card */}
-        <Card className="shadow-sm border-0 rounded-2xl overflow-hidden">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="font-semibold text-gray-800 flex items-center gap-2">
-                <FileText className="w-5 h-5 text-[#1877F2]" />
-                Post Management
-              </h3>
-              {posts.length > 0 && (
-                <span className="text-xs text-gray-400">{posts.length} posts loaded</span>
-              )}
-            </div>
-            <p className="text-sm text-gray-500 mb-4">
-              Load and bulk delete your Facebook posts.
-            </p>
-
-            <Button
-              onClick={handleLoadPosts}
-              disabled={postsMutation.isPending}
-              variant="outline"
-              className="w-full h-11 rounded-xl border-[#1877F2] text-[#1877F2] hover:bg-[#E7F3FF] font-semibold mb-4"
-            >
-              {postsMutation.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4 mr-2" />
-              )}
-              {postsMutation.isPending ? "Loading Posts..." : "Load My Posts"}
-            </Button>
-
-            {showPosts && posts.length > 0 && (
-              <>
-                <div className="flex items-center justify-between mb-3">
-                  <button
-                    onClick={handleSelectAll}
-                    className="flex items-center gap-2 text-sm font-medium text-[#1877F2] hover:underline"
-                  >
-                    {selectedPosts.size === posts.length ? (
-                      <CheckSquare className="w-4 h-4" />
-                    ) : (
-                      <Square className="w-4 h-4" />
-                    )}
-                    {selectedPosts.size === posts.length ? "Deselect All" : "Select All"}
+            {profile && Object.keys(profile.parsedCookies).length > 0 && (
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardHeader className="p-4 pb-0">
+                  <button className="flex w-full items-center justify-between text-left" onClick={() => setShowCookies((value) => !value)}>
+                    <span className="flex items-center gap-2 text-sm font-semibold"><Cookie className="h-4 w-4 text-[#1877F2]" /> Cookie Details</span>
+                    {showCookies ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
                   </button>
-                  {selectedPosts.size > 0 && (
-                    <Button
-                      onClick={handleDeleteSelected}
-                      disabled={deletePostsMutation.isPending}
-                      size="sm"
-                      className="rounded-xl h-8 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold"
-                    >
-                      {deletePostsMutation.isPending ? (
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-3 h-3 mr-1" />
-                      )}
-                      Delete {selectedPosts.size} Selected
-                    </Button>
-                  )}
-                </div>
-
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {posts.map((post) => (
-                    <div
-                      key={post.id}
-                      onClick={() => handleTogglePost(post.id)}
-                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
-                        selectedPosts.has(post.id)
-                          ? "bg-[#E7F3FF] border-[#1877F2]"
-                          : "bg-gray-50 border-gray-200 hover:bg-gray-100"
-                      }`}
-                    >
-                      <div className="mt-0.5 flex-shrink-0">
-                        {selectedPosts.has(post.id) ? (
-                          <CheckSquare className="w-5 h-5 text-[#1877F2]" />
-                        ) : (
-                          <Square className="w-5 h-5 text-gray-400" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-800 truncate">{post.message}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {new Date(post.createdTime).toLocaleDateString()} &middot; ID: {post.id.slice(0, 16)}...
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
+                </CardHeader>
+                {showCookies && <CardContent className="max-h-56 overflow-y-auto p-4 pt-3 text-xs">{Object.entries(profile.parsedCookies).map(([key, value]) => <div key={key} className="flex gap-2 border-b border-slate-100 py-1.5 last:border-0 dark:border-slate-800"><span className="w-28 shrink-0 font-semibold text-[#1877F2]">{key}</span><span className="break-all text-slate-600 dark:text-slate-400">{value.length > 70 ? `${value.slice(0, 70)}…` : value}</span></div>)}</CardContent>}
+              </Card>
             )}
+          </div>
 
-            {showPosts && posts.length === 0 && !postsMutation.isPending && (
-              <div className="text-center py-6 text-gray-400 text-sm">
-                No posts could be retrieved from this account.
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          <Tabs defaultValue="feed" className="space-y-4">
+            <TabsList className="grid h-auto grid-cols-5 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
+              <TabsTrigger value="feed" className="rounded-2xl"><FileText className="mr-1 h-4 w-4" /> Posts</TabsTrigger>
+              <TabsTrigger value="friends" className="rounded-2xl"><Users className="mr-1 h-4 w-4" /> Friends</TabsTrigger>
+              <TabsTrigger value="profile" className="rounded-2xl"><Edit3 className="mr-1 h-4 w-4" /> Profile</TabsTrigger>
+              <TabsTrigger value="watch" className="rounded-2xl"><Video className="mr-1 h-4 w-4" /> Watch</TabsTrigger>
+              <TabsTrigger value="all" className="rounded-2xl"><Shield className="mr-1 h-4 w-4" /> All</TabsTrigger>
+            </TabsList>
 
-        <p className="text-center text-xs text-gray-400 pb-4">
-          Facebook Guard Protection &mdash; v2.0
-        </p>
+            <TabsContent value="feed" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <Form {...postForm}>
+                    <form onSubmit={postForm.handleSubmit(handleCreatePost)} className="space-y-3">
+                      <FormField control={postForm.control} name="message" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-2"><MessageCircle className="h-4 w-4 text-[#1877F2]" /> Create New Post</FormLabel><FormControl><textarea placeholder={`What's on your mind, ${auth.name}?`} className="min-h-[110px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none focus:ring-2 focus:ring-[#1877F2] dark:border-slate-700 dark:bg-slate-900" {...field} /></FormControl><FormMessage /></FormItem>} />
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <FormField control={postForm.control} name="privacy" render={({ field }) => <FormItem className="sm:w-40"><FormControl><select className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-900" {...field}><option value="SELF">Only me</option><option value="ALL_FRIENDS">Friends</option><option value="EVERYONE">Public</option></select></FormControl></FormItem>} />
+                        <Button type="submit" disabled={createPostMutation.isPending} className="h-11 flex-1 rounded-2xl bg-[#1877F2] font-semibold hover:bg-[#0f66d4]">{createPostMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />} Post Now</Button>
+                      </div>
+                    </form>
+                  </Form>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div><h3 className="flex items-center gap-2 font-semibold"><FileText className="h-5 w-5 text-[#1877F2]" /> Post Management</h3><p className="text-sm text-slate-500 dark:text-slate-400">Display, select, and delete posts.</p></div>
+                    <Button onClick={handleLoadPosts} disabled={postsMutation.isPending} variant="outline" className="rounded-2xl border-[#1877F2] text-[#1877F2] hover:bg-blue-50 dark:hover:bg-blue-950/30">{postsMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} Load Posts</Button>
+                  </div>
+
+                  {posts.length > 0 && <div className="mb-3 flex items-center justify-between"><button onClick={handleSelectAll} className="flex items-center gap-2 text-sm font-medium text-[#1877F2] hover:underline">{selectedPosts.size === posts.length ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />} {selectedPosts.size === posts.length ? "Deselect All" : "Select All"}</button>{selectedPosts.size > 0 && <Button onClick={handleDeleteSelected} disabled={deletePostsMutation.isPending} size="sm" className="h-9 rounded-2xl bg-red-500 text-xs font-semibold text-white hover:bg-red-600">{deletePostsMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1 h-3 w-3" />} Delete {selectedPosts.size}</Button>}</div>}
+
+                  <div className="space-y-3">
+                    {posts.length === 0 && !postsMutation.isPending ? <EmptyState text="Load posts to display your Facebook timeline posts here." /> : posts.map((post) => <div key={post.id} className={`rounded-2xl border p-4 transition-colors ${selectedPosts.has(post.id) ? "border-[#1877F2] bg-blue-50 dark:bg-blue-950/30" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60"}`}><div className="flex items-start gap-3"><button onClick={() => handleTogglePost(post.id)} className="mt-1 shrink-0">{selectedPosts.has(post.id) ? <CheckSquare className="h-5 w-5 text-[#1877F2]" /> : <Square className="h-5 w-5 text-slate-400" />}</button><div className="min-w-0 flex-1"><p className="whitespace-pre-wrap text-sm text-slate-800 dark:text-slate-100">{post.message}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400"><span>{new Date(post.createdTime).toLocaleString()}</span><span>ID: {post.id.slice(0, 18)}</span>{post.permalink && <a className="inline-flex items-center gap-1 text-[#1877F2] hover:underline" href={post.permalink} target="_blank" rel="noreferrer">Open <ExternalLink className="h-3 w-3" /></a>}</div></div></div></div>)}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="friends" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 font-semibold"><Users className="h-5 w-5 text-[#1877F2]" /> Friends</h3><p className="text-sm text-slate-500 dark:text-slate-400">Fetch and display all friends Facebook returns for this session.</p></div><Button onClick={handleLoadFriends} disabled={friendsMutation.isPending} className="rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]">{friendsMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} Load Friends</Button></div>
+                  {friends.length === 0 && !friendsMutation.isPending ? <EmptyState text="No friends loaded yet." /> : <div className="grid gap-3 sm:grid-cols-2">{friends.map((friend) => <a key={friend.id} href={friend.profileUrl} target="_blank" rel="noreferrer" className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 hover:bg-blue-50 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:bg-blue-950/30"><img src={friend.pictureUrl} alt={friend.name} className="h-12 w-12 rounded-full object-cover" /><div className="min-w-0"><p className="truncate text-sm font-semibold">{friend.name}</p><p className="truncate text-xs text-slate-500">{friend.id}</p></div></a>)}</div>}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="profile" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <h3 className="mb-1 flex items-center gap-2 font-semibold"><Edit3 className="h-5 w-5 text-[#1877F2]" /> Update Profile</h3>
+                  <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">Submit profile changes. Facebook may require extra confirmation for protected fields.</p>
+                  <Form {...profileForm}>
+                    <form onSubmit={profileForm.handleSubmit(handleUpdateProfile)} className="grid gap-3 sm:grid-cols-2">
+                      <FormField control={profileForm.control} name="name" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><User className="h-3 w-3" /> Name</FormLabel><FormControl><Input className="rounded-2xl" placeholder={auth.name} {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="city" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><MapPin className="h-3 w-3" /> City</FormLabel><FormControl><Input className="rounded-2xl" placeholder="Current city" {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="work" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><Briefcase className="h-3 w-3" /> Work</FormLabel><FormControl><Input className="rounded-2xl" placeholder="Workplace" {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="education" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><GraduationCap className="h-3 w-3" /> Education</FormLabel><FormControl><Input className="rounded-2xl" placeholder="School" {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="relationship" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><Heart className="h-3 w-3" /> Relationship</FormLabel><FormControl><Input className="rounded-2xl" placeholder="Relationship status" {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="website" render={({ field }) => <FormItem><FormLabel className="flex items-center gap-1"><Link2 className="h-3 w-3" /> Website</FormLabel><FormControl><Input className="rounded-2xl" placeholder="https://..." {...field} /></FormControl></FormItem>} />
+                      <FormField control={profileForm.control} name="bio" render={({ field }) => <FormItem className="sm:col-span-2"><FormLabel>Bio</FormLabel><FormControl><textarea className="min-h-[90px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-[#1877F2] dark:border-slate-700 dark:bg-slate-900" placeholder="Write your bio" {...field} /></FormControl></FormItem>} />
+                      <Button type="submit" disabled={updateProfileMutation.isPending} className="h-11 rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4] sm:col-span-2">{updateProfileMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Edit3 className="mr-2 h-4 w-4" />} Update Profile</Button>
+                    </form>
+                  </Form>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="watch" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 font-semibold"><Video className="h-5 w-5 text-[#1877F2]" /> Watch Videos</h3><p className="text-sm text-slate-500 dark:text-slate-400">Load videos and play them inside the app.</p></div><Button onClick={handleLoadVideos} disabled={videosMutation.isPending} className="rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]">{videosMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />} Load Videos</Button></div>
+                  {selectedVideo ? <div className="space-y-4"><div className="overflow-hidden rounded-3xl bg-black">{selectedVideo.videoUrl ? <video src={selectedVideo.videoUrl} poster={selectedVideo.thumbnailUrl || undefined} controls className="aspect-video w-full" /> : <div className="flex aspect-video items-center justify-center text-white">Video URL unavailable</div>}</div><div className="grid gap-3 sm:grid-cols-2">{videos.map((video) => <button key={video.id} onClick={() => setActiveVideoId(video.id)} className={`flex gap-3 rounded-2xl border p-3 text-left ${selectedVideo.id === video.id ? "border-[#1877F2] bg-blue-50 dark:bg-blue-950/30" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60"}`}><div className="flex h-16 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-black">{video.thumbnailUrl ? <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover" /> : <Play className="h-6 w-6 text-white" />}</div><div className="min-w-0"><p className="line-clamp-2 text-sm font-semibold">{video.title}</p><p className="mt-1 text-xs text-slate-500">{new Date(video.createdTime).toLocaleDateString()}</p><a href={video.permalink} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="mt-1 inline-flex items-center gap-1 text-xs text-[#1877F2] hover:underline">Open on Facebook <ExternalLink className="h-3 w-3" /></a></div></button>)}</div></div> : <EmptyState text="Load videos to start watching." />}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="all" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]"><CardContent className="p-6"><div className="grid gap-3 sm:grid-cols-3"><Button onClick={handleLoadFriends} className="h-12 rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]"><Users className="mr-2 h-4 w-4" /> Fetch Friends</Button><Button onClick={handleLoadPosts} className="h-12 rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]"><FileText className="mr-2 h-4 w-4" /> Display Posts</Button><Button onClick={handleLoadVideos} className="h-12 rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]"><Video className="mr-2 h-4 w-4" /> Watch Videos</Button></div></CardContent></Card>
+              <Tabs value="feed"><TabsContent value="feed" className="mt-0" /></Tabs>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        <p className="pb-4 text-center text-xs text-slate-400">Facebook Guard Protection — v3.0</p>
       </div>
     </div>
   );

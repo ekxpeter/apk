@@ -170,6 +170,102 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fb/friends:
+    post:
+      operationId: fbGetFriends
+      tags: [facebook]
+      summary: Get user friends
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbTokenRequest"
+      responses:
+        "200":
+          description: Friends list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbFriendsResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/profile/update:
+    post:
+      operationId: fbUpdateProfile
+      tags: [facebook]
+      summary: Update profile information
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbUpdateProfileRequest"
+      responses:
+        "200":
+          description: Profile update result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbUpdateProfileResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/posts/create:
+    post:
+      operationId: fbCreatePost
+      tags: [facebook]
+      summary: Create a new post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbCreatePostRequest"
+      responses:
+        "200":
+          description: Created post
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbCreatePostResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/videos:
+    post:
+      operationId: fbGetVideos
+      tags: [facebook]
+      summary: Get user videos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbTokenRequest"
+      responses:
+        "200":
+          description: Videos list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbVideosResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -269,6 +365,8 @@ components:
           type: string
         createdTime:
           type: string
+        permalink:
+          type: string
       required:
         - id
         - message
@@ -306,6 +404,136 @@ components:
       required:
         - deleted
         - failed
+        - message
+    FbFriend:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        profileUrl:
+          type: string
+        pictureUrl:
+          type: string
+      required:
+        - id
+        - name
+        - profileUrl
+        - pictureUrl
+    FbFriendsResponse:
+      type: object
+      properties:
+        friends:
+          type: array
+          items:
+            $ref: "#/components/schemas/FbFriend"
+        total:
+          type: number
+        message:
+          type: string
+      required:
+        - friends
+        - total
+        - message
+    FbUpdateProfileRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        name:
+          type: string
+        bio:
+          type: string
+        city:
+          type: string
+        work:
+          type: string
+        education:
+          type: string
+        relationship:
+          type: string
+        website:
+          type: string
+      required:
+        - token
+    FbUpdateProfileResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        appliedFields:
+          type: array
+          items:
+            type: string
+        failedFields:
+          type: array
+          items:
+            type: string
+      required:
+        - success
+        - message
+        - appliedFields
+        - failedFields
+    FbCreatePostRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        message:
+          type: string
+        privacy:
+          type: string
+      required:
+        - token
+        - message
+    FbCreatePostResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        post:
+          $ref: "#/components/schemas/FbPost"
+        message:
+          type: string
+      required:
+        - success
+        - message
+    FbVideo:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        thumbnailUrl:
+          type: string
+        videoUrl:
+          type: string
+        permalink:
+          type: string
+        createdTime:
+          type: string
+      required:
+        - id
+        - title
+        - thumbnailUrl
+        - videoUrl
+        - permalink
+        - createdTime
+    FbVideosResponse:
+      type: object
+      properties:
+        videos:
+          type: array
+          items:
+            $ref: "#/components/schemas/FbVideo"
+        message:
+          type: string
+      required:
+        - videos
         - message
     ErrorResponse:
       type: object

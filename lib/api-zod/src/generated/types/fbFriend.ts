@@ -6,9 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface FbPost {
+export interface FbFriend {
   id: string;
-  message: string;
-  createdTime: string;
-  permalink?: string;
+  name: string;
+  profileUrl: string;
+  pictureUrl: string;
 }

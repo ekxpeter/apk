@@ -6,9 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface FbPost {
-  id: string;
+export interface FbCreatePostRequest {
+  token: string;
   message: string;
-  createdTime: string;
-  permalink?: string;
+  privacy?: string;
 }

@@ -84,6 +84,7 @@ export const FbGetPostsResponse = zod.object({
       id: zod.string(),
       message: zod.string(),
       createdTime: zod.string(),
+      permalink: zod.string().optional(),
     }),
   ),
 });
@@ -99,5 +100,89 @@ export const FbDeletePostsBody = zod.object({
 export const FbDeletePostsResponse = zod.object({
   deleted: zod.number(),
   failed: zod.number(),
+  message: zod.string(),
+});
+
+/**
+ * @summary Get user friends
+ */
+export const FbGetFriendsBody = zod.object({
+  token: zod.string(),
+});
+
+export const FbGetFriendsResponse = zod.object({
+  friends: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+      profileUrl: zod.string(),
+      pictureUrl: zod.string(),
+    }),
+  ),
+  total: zod.number(),
+  message: zod.string(),
+});
+
+/**
+ * @summary Update profile information
+ */
+export const FbUpdateProfileBody = zod.object({
+  token: zod.string(),
+  name: zod.string().optional(),
+  bio: zod.string().optional(),
+  city: zod.string().optional(),
+  work: zod.string().optional(),
+  education: zod.string().optional(),
+  relationship: zod.string().optional(),
+  website: zod.string().optional(),
+});
+
+export const FbUpdateProfileResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string(),
+  appliedFields: zod.array(zod.string()),
+  failedFields: zod.array(zod.string()),
+});
+
+/**
+ * @summary Create a new post
+ */
+export const FbCreatePostBody = zod.object({
+  token: zod.string(),
+  message: zod.string(),
+  privacy: zod.string().optional(),
+});
+
+export const FbCreatePostResponse = zod.object({
+  success: zod.boolean(),
+  post: zod
+    .object({
+      id: zod.string(),
+      message: zod.string(),
+      createdTime: zod.string(),
+      permalink: zod.string().optional(),
+    })
+    .optional(),
+  message: zod.string(),
+});
+
+/**
+ * @summary Get user videos
+ */
+export const FbGetVideosBody = zod.object({
+  token: zod.string(),
+});
+
+export const FbGetVideosResponse = zod.object({
+  videos: zod.array(
+    zod.object({
+      id: zod.string(),
+      title: zod.string(),
+      thumbnailUrl: zod.string(),
+      videoUrl: zod.string(),
+      permalink: zod.string(),
+      createdTime: zod.string(),
+    }),
+  ),
   message: zod.string(),
 });

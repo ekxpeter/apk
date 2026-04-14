@@ -53,6 +53,7 @@ export interface FbPost {
   id: string;
   message: string;
   createdTime: string;
+  permalink?: string;
 }
 
 export interface FbPostsResponse {
@@ -67,6 +68,63 @@ export interface FbDeletePostsRequest {
 export interface FbDeletePostsResponse {
   deleted: number;
   failed: number;
+  message: string;
+}
+
+export interface FbFriend {
+  id: string;
+  name: string;
+  profileUrl: string;
+  pictureUrl: string;
+}
+
+export interface FbFriendsResponse {
+  friends: FbFriend[];
+  total: number;
+  message: string;
+}
+
+export interface FbUpdateProfileRequest {
+  token: string;
+  name?: string;
+  bio?: string;
+  city?: string;
+  work?: string;
+  education?: string;
+  relationship?: string;
+  website?: string;
+}
+
+export interface FbUpdateProfileResponse {
+  success: boolean;
+  message: string;
+  appliedFields: string[];
+  failedFields: string[];
+}
+
+export interface FbCreatePostRequest {
+  token: string;
+  message: string;
+  privacy?: string;
+}
+
+export interface FbCreatePostResponse {
+  success: boolean;
+  post?: FbPost;
+  message: string;
+}
+
+export interface FbVideo {
+  id: string;
+  title: string;
+  thumbnailUrl: string;
+  videoUrl: string;
+  permalink: string;
+  createdTime: string;
+}
+
+export interface FbVideosResponse {
+  videos: FbVideo[];
   message: string;
 }
 

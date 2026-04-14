@@ -150,6 +150,59 @@
   --destructive-border: hsl(var(--destructive));
 }
 
+.dark {
+  --button-outline: rgba(45,136,255, .18);
+  --badge-outline: rgba(45,136,255, .08);
+  --elevate-1: rgba(255,255,255, .04);
+  --elevate-2: rgba(255,255,255, .08);
+
+  --background: 210 6% 10%;
+  --foreground: 210 9% 92%;
+
+  --border: 214 8% 28%;
+
+  --card: 210 5% 14%;
+  --card-foreground: 210 9% 92%;
+  --card-border: 214 8% 28%;
+
+  --sidebar: 210 5% 14%;
+  --sidebar-foreground: 210 9% 92%;
+  --sidebar-border: 214 8% 28%;
+  --sidebar-primary: 214 89% 58%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 210 6% 18%;
+  --sidebar-accent-foreground: 210 9% 92%;
+  --sidebar-ring: 214 89% 58%;
+
+  --popover: 210 5% 14%;
+  --popover-foreground: 210 9% 92%;
+  --popover-border: 214 8% 28%;
+
+  --primary: 214 89% 58%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 210 6% 18%;
+  --secondary-foreground: 210 9% 92%;
+
+  --muted: 210 6% 18%;
+  --muted-foreground: 210 6% 65%;
+
+  --accent: 214 50% 22%;
+  --accent-foreground: 214 89% 72%;
+
+  --destructive: 0 72% 55%;
+  --destructive-foreground: 0 0% 100%;
+
+  --input: 214 8% 28%;
+  --ring: 214 89% 58%;
+
+  --chart-1: 214 89% 58%;
+  --chart-2: 200 89% 55%;
+  --chart-3: 160 70% 45%;
+  --chart-4: 40 90% 55%;
+  --chart-5: 280 65% 65%;
+}
+
 @layer base {
   * {
     @apply border-border;

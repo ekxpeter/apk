@@ -5,10 +5,10 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { FbPost } from "./fbPost";
 
-export interface FbPost {
-  id: string;
+export interface FbCreatePostResponse {
+  success: boolean;
+  post?: FbPost;
   message: string;
-  createdTime: string;
-  permalink?: string;
 }

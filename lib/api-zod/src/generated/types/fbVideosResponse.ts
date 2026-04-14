@@ -5,10 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { FbVideo } from "./fbVideo";
 
-export interface FbPost {
-  id: string;
+export interface FbVideosResponse {
+  videos: FbVideo[];
   message: string;
-  createdTime: string;
-  permalink?: string;
 }

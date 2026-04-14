@@ -8,8 +8,12 @@
 
 export * from "./errorResponse";
 export * from "./fbCookieLoginRequest";
+export * from "./fbCreatePostRequest";
+export * from "./fbCreatePostResponse";
 export * from "./fbDeletePostsRequest";
 export * from "./fbDeletePostsResponse";
+export * from "./fbFriend";
+export * from "./fbFriendsResponse";
 export * from "./fbGuardRequest";
 export * from "./fbGuardResponse";
 export * from "./fbLoginRequest";
@@ -19,4 +23,8 @@ export * from "./fbPostsResponse";
 export * from "./fbProfileResponse";
 export * from "./fbProfileResponseParsedCookies";
 export * from "./fbTokenRequest";
+export * from "./fbUpdateProfileRequest";
+export * from "./fbUpdateProfileResponse";
+export * from "./fbVideo";
+export * from "./fbVideosResponse";
 export * from "./healthStatus";

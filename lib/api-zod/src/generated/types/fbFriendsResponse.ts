@@ -5,10 +5,10 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { FbFriend } from "./fbFriend";
 
-export interface FbPost {
-  id: string;
+export interface FbFriendsResponse {
+  friends: FbFriend[];
+  total: number;
   message: string;
-  createdTime: string;
-  permalink?: string;
 }

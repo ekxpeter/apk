@@ -19,8 +19,11 @@ import type {
 import type {
   ErrorResponse,
   FbCookieLoginRequest,
+  FbCreatePostRequest,
+  FbCreatePostResponse,
   FbDeletePostsRequest,
   FbDeletePostsResponse,
+  FbFriendsResponse,
   FbGuardRequest,
   FbGuardResponse,
   FbLoginRequest,
@@ -28,6 +31,9 @@ import type {
   FbPostsResponse,
   FbProfileResponse,
   FbTokenRequest,
+  FbUpdateProfileRequest,
+  FbUpdateProfileResponse,
+  FbVideosResponse,
   HealthStatus,
 } from "./api.schemas";
 
@@ -630,4 +636,348 @@ export const useFbDeletePosts = <
   TContext
 > => {
   return useMutation(getFbDeletePostsMutationOptions(options));
+};
+
+/**
+ * @summary Get user friends
+ */
+export const getFbGetFriendsUrl = () => {
+  return `/api/fb/friends`;
+};
+
+export const fbGetFriends = async (
+  fbTokenRequest: FbTokenRequest,
+  options?: RequestInit,
+): Promise<FbFriendsResponse> => {
+  return customFetch<FbFriendsResponse>(getFbGetFriendsUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbTokenRequest),
+  });
+};
+
+export const getFbGetFriendsMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbGetFriends>>,
+    TError,
+    { data: BodyType<FbTokenRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbGetFriends>>,
+  TError,
+  { data: BodyType<FbTokenRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbGetFriends"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbGetFriends>>,
+    { data: BodyType<FbTokenRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbGetFriends(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbGetFriendsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbGetFriends>>
+>;
+export type FbGetFriendsMutationBody = BodyType<FbTokenRequest>;
+export type FbGetFriendsMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get user friends
+ */
+export const useFbGetFriends = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbGetFriends>>,
+    TError,
+    { data: BodyType<FbTokenRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbGetFriends>>,
+  TError,
+  { data: BodyType<FbTokenRequest> },
+  TContext
+> => {
+  return useMutation(getFbGetFriendsMutationOptions(options));
+};
+
+/**
+ * @summary Update profile information
+ */
+export const getFbUpdateProfileUrl = () => {
+  return `/api/fb/profile/update`;
+};
+
+export const fbUpdateProfile = async (
+  fbUpdateProfileRequest: FbUpdateProfileRequest,
+  options?: RequestInit,
+): Promise<FbUpdateProfileResponse> => {
+  return customFetch<FbUpdateProfileResponse>(getFbUpdateProfileUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbUpdateProfileRequest),
+  });
+};
+
+export const getFbUpdateProfileMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUpdateProfile>>,
+    TError,
+    { data: BodyType<FbUpdateProfileRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbUpdateProfile>>,
+  TError,
+  { data: BodyType<FbUpdateProfileRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbUpdateProfile"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbUpdateProfile>>,
+    { data: BodyType<FbUpdateProfileRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbUpdateProfile(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbUpdateProfileMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbUpdateProfile>>
+>;
+export type FbUpdateProfileMutationBody = BodyType<FbUpdateProfileRequest>;
+export type FbUpdateProfileMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Update profile information
+ */
+export const useFbUpdateProfile = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUpdateProfile>>,
+    TError,
+    { data: BodyType<FbUpdateProfileRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbUpdateProfile>>,
+  TError,
+  { data: BodyType<FbUpdateProfileRequest> },
+  TContext
+> => {
+  return useMutation(getFbUpdateProfileMutationOptions(options));
+};
+
+/**
+ * @summary Create a new post
+ */
+export const getFbCreatePostUrl = () => {
+  return `/api/fb/posts/create`;
+};
+
+export const fbCreatePost = async (
+  fbCreatePostRequest: FbCreatePostRequest,
+  options?: RequestInit,
+): Promise<FbCreatePostResponse> => {
+  return customFetch<FbCreatePostResponse>(getFbCreatePostUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbCreatePostRequest),
+  });
+};
+
+export const getFbCreatePostMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbCreatePost>>,
+    TError,
+    { data: BodyType<FbCreatePostRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbCreatePost>>,
+  TError,
+  { data: BodyType<FbCreatePostRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbCreatePost"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbCreatePost>>,
+    { data: BodyType<FbCreatePostRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbCreatePost(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbCreatePostMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbCreatePost>>
+>;
+export type FbCreatePostMutationBody = BodyType<FbCreatePostRequest>;
+export type FbCreatePostMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Create a new post
+ */
+export const useFbCreatePost = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbCreatePost>>,
+    TError,
+    { data: BodyType<FbCreatePostRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbCreatePost>>,
+  TError,
+  { data: BodyType<FbCreatePostRequest> },
+  TContext
+> => {
+  return useMutation(getFbCreatePostMutationOptions(options));
+};
+
+/**
+ * @summary Get user videos
+ */
+export const getFbGetVideosUrl = () => {
+  return `/api/fb/videos`;
+};
+
+export const fbGetVideos = async (
+  fbTokenRequest: FbTokenRequest,
+  options?: RequestInit,
+): Promise<FbVideosResponse> => {
+  return customFetch<FbVideosResponse>(getFbGetVideosUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbTokenRequest),
+  });
+};
+
+export const getFbGetVideosMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbGetVideos>>,
+    TError,
+    { data: BodyType<FbTokenRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbGetVideos>>,
+  TError,
+  { data: BodyType<FbTokenRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbGetVideos"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbGetVideos>>,
+    { data: BodyType<FbTokenRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbGetVideos(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbGetVideosMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbGetVideos>>
+>;
+export type FbGetVideosMutationBody = BodyType<FbTokenRequest>;
+export type FbGetVideosMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get user videos
+ */
+export const useFbGetVideos = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbGetVideos>>,
+    TError,
+    { data: BodyType<FbTokenRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbGetVideos>>,
+  TError,
+  { data: BodyType<FbTokenRequest> },
+  TContext
+> => {
+  return useMutation(getFbGetVideosMutationOptions(options));
 };
