@@ -10,6 +10,22 @@ const DESKTOP_UA =
 const MOBILE_UA =
   "Dalvik/2.1.0 (Linux; U; Android 12; SM-G991B Build/SP1A.210812.016)";
 
+const BROWSER_HEADERS = {
+  "user-agent": DESKTOP_UA,
+  "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "accept-language": "en-US,en;q=0.9",
+  "accept-encoding": "identity",
+  "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+  "sec-fetch-dest": "document",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-site": "none",
+  "sec-fetch-user": "?1",
+  "upgrade-insecure-requests": "1",
+  "cache-control": "max-age=0",
+};
+
 interface SessionData {
   cookie: string;
   dtsg: string;
@@ -149,15 +165,7 @@ async function loginWithCookie(
   for (const url of pagesToTry) {
     try {
       const res = await fetch(url, {
-        headers: {
-          cookie: rawCookie,
-          "user-agent": DESKTOP_UA,
-          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "accept-language": "en-US,en;q=0.9",
-          "sec-fetch-dest": "document",
-          "sec-fetch-mode": "navigate",
-          "sec-fetch-site": "same-origin",
-        },
+        headers: { ...BROWSER_HEADERS, cookie: rawCookie },
         redirect: "follow",
       });
 
@@ -227,6 +235,27 @@ async function loginWithCookie(
   return null;
 }
 
+async function fetchProfileHtml(cookie: string, userId: string): Promise<string | null> {
+  const urls = [
+    `https://www.facebook.com/profile.php?id=${userId}`,
+    `https://www.facebook.com/profile.php?id=${userId}&sk=about`,
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: { ...BROWSER_HEADERS, cookie },
+        redirect: "follow",
+      });
+      const html = await res.text();
+      logger.info({ url, status: res.status, len: html.length }, "fetchProfileHtml");
+      if (html.length > 100000) return html;
+    } catch (err) {
+      logger.error({ err }, "fetchProfileHtml error");
+    }
+  }
+  return null;
+}
+
 async function getProfileInfo(session: SessionData): Promise<{
   profilePicUrl: string;
   friendsCount: number;
@@ -235,179 +264,287 @@ async function getProfileInfo(session: SessionData): Promise<{
   parsedCookies: Record<string, string>;
 }> {
   const userId = session.userId;
-  let profilePicUrl = `https://graph.facebook.com/${userId}/picture?type=large&redirect=false`;
+  let profilePicUrl = "";
   let friendsCount = 0;
   let gender = "Unknown";
   let postCount = 0;
 
-  // Try to get picture URL via redirect
-  try {
-    const picRes = await fetch(`https://graph.facebook.com/${userId}/picture?type=large&redirect=false`);
-    if (picRes.ok) {
-      const picJson = await picRes.json() as { data?: { url?: string } };
-      if (picJson?.data?.url) {
-        profilePicUrl = picJson.data.url;
-      }
-    }
-  } catch {
-    profilePicUrl = `https://graph.facebook.com/${userId}/picture?type=large`;
-  }
-
-  // Scrape profile page for friends count, post count, gender
   if (session.isCookieSession && session.cookie) {
-    try {
-      const profileRes = await fetch(`https://www.facebook.com/profile.php?id=${userId}`, {
-        headers: {
-          cookie: session.cookie,
-          "user-agent": DESKTOP_UA,
-          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "accept-language": "en-US,en;q=0.9",
-        },
-        redirect: "follow",
-      });
-      const html = await profileRes.text();
+    // Fetch the full profile page with real browser headers
+    const html = await fetchProfileHtml(session.cookie, userId);
 
-      // Friends count patterns
-      const friendsPatterns = [
-        /"friends":{"count":(\d+)/,
-        /"friend_count":(\d+)/,
-        /(\d+)\s+[Ff]riends/,
-        /"total_count":(\d+).*?"friends"/,
+    if (html) {
+      // ── Profile Picture ──────────────────────────────────────────────────
+      // Try patterns found working in actual FB HTML
+      const picPatterns = [
+        /"profile_picture":\{"__typename":"ProfilePhoto"[^}]*"uri":"([^"]+)"/,
+        /"profile_picture":\{[^}]*"uri":"([^"]+)"/,
+        /"profilePicture":\{[^}]*"uri":"([^"]+)"/,
+        /"photo_url":"(https:\\\/\\\/scontent[^"]+)"/,
+        /og:image[^>]*content="([^"]+)"/,
+        /"uri":"(https:\\\/\\\/scontent[^"]+\.jpg[^"]*)"/,
       ];
-      for (const pat of friendsPatterns) {
+      for (const pat of picPatterns) {
         const m = html.match(pat);
-        if (m) {
-          friendsCount = parseInt(m[1], 10);
+        if (m && m[1] && m[1].includes("scontent")) {
+          profilePicUrl = m[1].replace(/\\\//g, "/");
+          logger.info({ pat: pat.toString().substring(0, 60), url: profilePicUrl.substring(0, 80) }, "Found profile pic");
           break;
         }
       }
 
-      // Gender patterns
+      // ── Gender ──────────────────────────────────────────────────────────
       const genderPatterns = [
         /"gender":"([^"]+)"/,
+        /"GENDER":"([^"]+)"/,
         /"viewer_gender":"([^"]+)"/,
-        /"pronouns":"([^"]+)"/,
       ];
       for (const pat of genderPatterns) {
         const m = html.match(pat);
-        if (m) {
-          const g = m[1].toLowerCase();
-          if (g === "male" || g === "MALE") gender = "Male";
-          else if (g === "female" || g === "FEMALE") gender = "Female";
+        if (m && m[1]) {
+          const g = m[1].toUpperCase();
+          if (g === "MALE") gender = "Male";
+          else if (g === "FEMALE") gender = "Female";
           else gender = m[1];
+          logger.info({ gender }, "Found gender");
           break;
         }
       }
 
-      // Post count — try to find from timeline section
+      // ── Friends Count ─────────────────────────────────────────────────────
+      // Only match reasonably-sized friend counts (≤ 8 digits, not a UID)
+      const friendsPatterns: RegExp[] = [
+        /"friends":\{"__typename":"FriendsConnection","count":(\d{1,8})/,
+        /"friends":\{[^}]{0,80}"count":(\d{1,8})/,
+        /"friend_count":(\d{1,8})/,
+        /"friendCount":(\d{1,8})/,
+        /"mutual_friends":\{[^}]{0,80}"count":(\d{1,8})/,
+        /(\d{1,6}) [Ff]riends/,
+      ];
+      for (const pat of friendsPatterns) {
+        const m = html.match(pat);
+        if (m && m[1]) {
+          const n = parseInt(m[1].replace(/,/g, ""), 10);
+          if (!isNaN(n) && n < 10000000) { friendsCount = n; break; }
+        }
+      }
+
+      // Also try the friends sub-page
+      if (friendsCount === 0) {
+        try {
+          const friendsRes = await fetch(
+            `https://www.facebook.com/profile.php?id=${userId}&sk=friends`,
+            { headers: { ...BROWSER_HEADERS, cookie: session.cookie }, redirect: "follow" }
+          );
+          const friendsHtml = await friendsRes.text();
+          for (const pat of friendsPatterns) {
+            const m = friendsHtml.match(pat);
+            if (m && m[1]) {
+              const n = parseInt(m[1].replace(/,/g, ""), 10);
+              if (!isNaN(n) && n < 10000000) { friendsCount = n; break; }
+            }
+          }
+          // Count actual friend cards on the page as a rough count
+          if (friendsCount === 0) {
+            const cardMatches = friendsHtml.match(/"__typename":"User","id":"\d+"/g);
+            if (cardMatches) {
+              const uniq = new Set(cardMatches);
+              uniq.delete(`"__typename":"User","id":"${userId}"`);
+              if (uniq.size > 0) friendsCount = uniq.size;
+            }
+          }
+        } catch (err) {
+          logger.error({ err }, "friends page fetch error");
+        }
+      }
+
+      // ── Post Count ───────────────────────────────────────────────────────
       const postPatterns = [
         /"post_count":(\d+)/,
-        /"timeline_posts":{"count":(\d+)/,
-        /"total_count":(\d+).*?[Pp]osts/,
+        /"timeline_posts":\{[^}]*"count":(\d+)/,
+        /"postsCount":(\d+)/,
+        /"Posts":\{[^}]*"count":(\d+)/,
       ];
       for (const pat of postPatterns) {
         const m = html.match(pat);
-        if (m) {
+        if (m && m[1]) {
           postCount = parseInt(m[1], 10);
           break;
         }
       }
-    } catch (err) {
-      logger.error({ err }, "getProfileInfo scrape error");
     }
   }
 
+  // Fallback profile picture via graph API (handles public profiles or when HTML extraction failed)
+  if (!profilePicUrl) {
+    try {
+      const picRes = await fetch(
+        `https://graph.facebook.com/${userId}/picture?type=large&redirect=false`
+      );
+      if (picRes.ok) {
+        const picJson = await picRes.json() as { data?: { url?: string; is_silhouette?: boolean } };
+        if (picJson?.data?.url && !picJson.data.is_silhouette) {
+          profilePicUrl = picJson.data.url;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Final fallback — blank (frontend will show default avatar)
+  if (!profilePicUrl) profilePicUrl = "";
+
   const parsedCookies = session.isCookieSession ? parseCookieString(session.cookie) : {};
 
+  logger.info({ profilePicUrl: profilePicUrl.substring(0, 60), friendsCount, gender, postCount }, "getProfileInfo result");
   return { profilePicUrl, friendsCount, gender, postCount, parsedCookies };
 }
 
 async function getUserPosts(session: SessionData): Promise<Array<{ id: string; message: string; createdTime: string }>> {
-  if (!session.isCookieSession || !session.cookie || !session.dtsg) {
-    return [];
-  }
-
   const posts: Array<{ id: string; message: string; createdTime: string }> = [];
+  const seen = new Set<string>();
 
-  try {
-    // Use Facebook's internal GraphQL to fetch timeline posts
-    const variables = JSON.stringify({
-      userID: session.userId,
-      count: 10,
-      cursor: null,
-      privacySelectorRenderLocation: "COMET_STREAM",
-      timelineNavAppSection: "TIMELINE",
-    });
-
-    const body = new URLSearchParams({
-      fb_dtsg: session.dtsg,
-      variables,
-      doc_id: "4889935097752973",
-    });
-
-    const res = await fetch("https://www.facebook.com/api/graphql/", {
-      method: "POST",
-      headers: {
-        cookie: session.cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "user-agent": DESKTOP_UA,
-        "x-fb-friendly-name": "ProfileCometTimelineFeedQuery",
-        origin: "https://www.facebook.com",
-        referer: `https://www.facebook.com/profile.php?id=${session.userId}`,
-      },
-      body: body.toString(),
-    });
-
-    const text = await res.text();
-    logger.info({ status: res.status, len: text.length }, "getUserPosts response");
-
-    // Parse newline-delimited JSON
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const json = JSON.parse(line);
-        // Try to extract post nodes from various response shapes
-        const edges = json?.data?.node?.timeline_feed_units?.edges ||
-          json?.data?.viewer?.newsFeedConnection?.edges ||
-          [];
-
-        for (const edge of edges) {
-          const node = edge?.node;
-          if (!node) continue;
-
-          const postId = node?.post_id || node?.id || node?.story_id;
-          const message = node?.message?.text ||
-            node?.comet_sections?.content?.story?.message?.text || "";
-          const createdTime = node?.creation_time
-            ? new Date(node.creation_time * 1000).toISOString()
-            : new Date().toISOString();
-
-          if (postId) {
-            posts.push({ id: postId, message: message || "(no text)", createdTime });
-          }
-        }
-      } catch {
-        // skip non-JSON lines
-      }
+  const addPost = (id: string, message: string, createdTime: string) => {
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      posts.push({ id, message: message || "(no text)", createdTime });
     }
+  };
 
-    // If GraphQL failed, try the /me/posts Graph API (OAuth only, but worth trying)
-    if (posts.length === 0 && session.accessToken) {
+  // OAuth path
+  if (session.accessToken && !session.isCookieSession) {
+    try {
       const graphRes = await fetch(
-        `https://graph.facebook.com/me/posts?access_token=${session.accessToken}&fields=id,message,created_time&limit=20`
+        `https://graph.facebook.com/me/posts?access_token=${session.accessToken}&fields=id,message,created_time&limit=25`
       );
       if (graphRes.ok) {
         const graphJson = await graphRes.json() as { data?: Array<{ id: string; message?: string; created_time: string }> };
         for (const p of graphJson?.data || []) {
-          posts.push({ id: p.id, message: p.message || "(no text)", createdTime: p.created_time });
+          addPost(p.id, p.message || "(no text)", p.created_time);
         }
       }
+    } catch (err) {
+      logger.error({ err }, "getUserPosts graph error");
     }
-  } catch (err) {
-    logger.error({ err }, "getUserPosts error");
+    return posts;
   }
 
-  return posts;
+  if (!session.isCookieSession || !session.cookie || !session.dtsg) return posts;
+
+  // Try multiple GraphQL doc_ids for timeline posts
+  const docIds = [
+    "7268703163238739",
+    "4889935097752973",
+    "9015426468489944",
+    "4859640990749441",
+    "7315374748528579",
+  ];
+
+  for (const docId of docIds) {
+    try {
+      const variables = JSON.stringify({
+        userID: session.userId,
+        count: 10,
+        cursor: null,
+        privacySelectorRenderLocation: "COMET_STREAM",
+        timelineNavAppSection: "TIMELINE",
+        scale: 1,
+        id: session.userId,
+      });
+
+      const body = new URLSearchParams({
+        fb_dtsg: session.dtsg,
+        variables,
+        doc_id: docId,
+      });
+
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": DESKTOP_UA,
+          "x-fb-friendly-name": "ProfileCometTimelineFeedQuery",
+          "x-fb-lsd": session.dtsg.substring(0, 10),
+          origin: "https://www.facebook.com",
+          referer: `https://www.facebook.com/profile.php?id=${session.userId}`,
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      logger.info({ docId, status: res.status, len: text.length, preview: text.substring(0, 200) }, "getUserPosts GQL");
+
+      if (res.status !== 200 || text.length < 100) continue;
+
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          // Various response shapes Facebook uses
+          const edgeSources = [
+            json?.data?.node?.timeline_feed_units?.edges,
+            json?.data?.node?.timeline_list_feed_units?.edges,
+            json?.data?.viewer?.newsFeedConnection?.edges,
+            json?.data?.user?.timeline_feed_units?.edges,
+          ];
+
+          for (const edges of edgeSources) {
+            if (!Array.isArray(edges)) continue;
+            for (const edge of edges) {
+              const node = edge?.node;
+              if (!node) continue;
+              const postId = node?.post_id || node?.id || node?.story_id;
+              const message =
+                node?.message?.text ||
+                node?.comet_sections?.content?.story?.message?.text ||
+                node?.story?.message?.text || "";
+              const ct = node?.creation_time || node?.created_time || 0;
+              const createdTime = ct ? new Date(ct * 1000).toISOString() : new Date().toISOString();
+              addPost(postId, message, createdTime);
+            }
+          }
+        } catch { /* skip non-JSON */ }
+      }
+
+      if (posts.length > 0) break; // Got some posts, stop trying
+    } catch (err) {
+      logger.error({ err, docId }, "getUserPosts GQL error");
+    }
+  }
+
+  // Fallback: scrape timeline HTML for post IDs
+  if (posts.length === 0) {
+    try {
+      const timelineRes = await fetch(
+        `https://www.facebook.com/profile.php?id=${session.userId}`,
+        { headers: { ...BROWSER_HEADERS, cookie: session.cookie }, redirect: "follow" }
+      );
+      const html = await timelineRes.text();
+      logger.info({ len: html.length }, "getUserPosts HTML scrape fallback");
+
+      // Extract story/post IDs from timeline HTML
+      const storyIdPattern = /"story_id":"(\d+)"/g;
+      const postIdPattern = /"post_id":"(\d+)"/g;
+      const topLevelPattern = /"top_level_post_id":"(\d+)"/g;
+
+      let m: RegExpExecArray | null;
+      while ((m = storyIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+      while ((m = postIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+      while ((m = topLevelPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+
+      // Also try extracting message text near story IDs
+      // Look for fbid in share URLs
+      const fbidPattern = /story_fbid=(\d+)/g;
+      while ((m = fbidPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString());
+    } catch (err) {
+      logger.error({ err }, "getUserPosts HTML scrape error");
+    }
+  }
+
+  return posts.slice(0, 50); // Return max 50 posts
 }
 
 async function deletePost(session: SessionData, postId: string): Promise<boolean> {
