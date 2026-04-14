@@ -35,6 +35,41 @@ export interface FbGuardResponse {
   message: string;
 }
 
+export interface FbTokenRequest {
+  token: string;
+}
+
+export type FbProfileResponseParsedCookies = { [key: string]: string };
+
+export interface FbProfileResponse {
+  profilePicUrl: string;
+  friendsCount: number;
+  gender: string;
+  postCount: number;
+  parsedCookies: FbProfileResponseParsedCookies;
+}
+
+export interface FbPost {
+  id: string;
+  message: string;
+  createdTime: string;
+}
+
+export interface FbPostsResponse {
+  posts: FbPost[];
+}
+
+export interface FbDeletePostsRequest {
+  token: string;
+  postIds: string[];
+}
+
+export interface FbDeletePostsResponse {
+  deleted: number;
+  failed: number;
+  message: string;
+}
+
 export interface ErrorResponse {
   message: string;
 }

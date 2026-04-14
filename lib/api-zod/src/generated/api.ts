@@ -55,3 +55,49 @@ export const FbToggleGuardResponse = zod.object({
   isShielded: zod.boolean(),
   message: zod.string(),
 });
+
+/**
+ * @summary Get profile information
+ */
+export const FbGetProfileBody = zod.object({
+  token: zod.string(),
+});
+
+export const FbGetProfileResponse = zod.object({
+  profilePicUrl: zod.string(),
+  friendsCount: zod.number(),
+  gender: zod.string(),
+  postCount: zod.number(),
+  parsedCookies: zod.record(zod.string(), zod.string()),
+});
+
+/**
+ * @summary Get user posts
+ */
+export const FbGetPostsBody = zod.object({
+  token: zod.string(),
+});
+
+export const FbGetPostsResponse = zod.object({
+  posts: zod.array(
+    zod.object({
+      id: zod.string(),
+      message: zod.string(),
+      createdTime: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Delete selected posts
+ */
+export const FbDeletePostsBody = zod.object({
+  token: zod.string(),
+  postIds: zod.array(zod.string()),
+});
+
+export const FbDeletePostsResponse = zod.object({
+  deleted: zod.number(),
+  failed: zod.number(),
+  message: zod.string(),
+});

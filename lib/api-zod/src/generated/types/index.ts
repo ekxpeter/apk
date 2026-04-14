@@ -8,8 +8,15 @@
 
 export * from "./errorResponse";
 export * from "./fbCookieLoginRequest";
+export * from "./fbDeletePostsRequest";
+export * from "./fbDeletePostsResponse";
 export * from "./fbGuardRequest";
 export * from "./fbGuardResponse";
 export * from "./fbLoginRequest";
 export * from "./fbLoginResponse";
+export * from "./fbPost";
+export * from "./fbPostsResponse";
+export * from "./fbProfileResponse";
+export * from "./fbProfileResponseParsedCookies";
+export * from "./fbTokenRequest";
 export * from "./healthStatus";

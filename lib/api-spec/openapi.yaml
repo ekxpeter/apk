@@ -98,6 +98,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fb/profile:
+    post:
+      operationId: fbGetProfile
+      tags: [facebook]
+      summary: Get profile information
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbTokenRequest"
+      responses:
+        "200":
+          description: Profile info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbProfileResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/posts:
+    post:
+      operationId: fbGetPosts
+      tags: [facebook]
+      summary: Get user posts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbTokenRequest"
+      responses:
+        "200":
+          description: Posts list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbPostsResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fb/delete-posts:
+    post:
+      operationId: fbDeletePosts
+      tags: [facebook]
+      summary: Delete selected posts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbDeletePostsRequest"
+      responses:
+        "200":
+          description: Delete result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbDeletePostsResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -159,6 +231,81 @@ components:
       required:
         - success
         - isShielded
+        - message
+    FbTokenRequest:
+      type: object
+      properties:
+        token:
+          type: string
+      required:
+        - token
+    FbProfileResponse:
+      type: object
+      properties:
+        profilePicUrl:
+          type: string
+        friendsCount:
+          type: number
+        gender:
+          type: string
+        postCount:
+          type: number
+        parsedCookies:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - profilePicUrl
+        - friendsCount
+        - gender
+        - postCount
+        - parsedCookies
+    FbPost:
+      type: object
+      properties:
+        id:
+          type: string
+        message:
+          type: string
+        createdTime:
+          type: string
+      required:
+        - id
+        - message
+        - createdTime
+    FbPostsResponse:
+      type: object
+      properties:
+        posts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FbPost"
+      required:
+        - posts
+    FbDeletePostsRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        postIds:
+          type: array
+          items:
+            type: string
+      required:
+        - token
+        - postIds
+    FbDeletePostsResponse:
+      type: object
+      properties:
+        deleted:
+          type: number
+        failed:
+          type: number
+        message:
+          type: string
+      required:
+        - deleted
+        - failed
         - message
     ErrorResponse:
       type: object
