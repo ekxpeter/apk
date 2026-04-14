@@ -145,6 +145,21 @@ export const FbUpdateProfileResponse = zod.object({
 });
 
 /**
+ * @summary Update profile picture
+ */
+export const FbUpdateProfilePictureBody = zod.object({
+  token: zod.string(),
+  imageData: zod.string(),
+  fileName: zod.string(),
+});
+
+export const FbUpdateProfilePictureResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string(),
+  profilePicUrl: zod.string().optional(),
+});
+
+/**
  * @summary Create a new post
  */
 export const FbCreatePostBody = zod.object({

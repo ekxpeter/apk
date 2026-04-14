@@ -102,6 +102,18 @@ export interface FbUpdateProfileResponse {
   failedFields: string[];
 }
 
+export interface FbUpdateProfilePictureRequest {
+  token: string;
+  imageData: string;
+  fileName: string;
+}
+
+export interface FbUpdateProfilePictureResponse {
+  success: boolean;
+  message: string;
+  profilePicUrl?: string;
+}
+
 export interface FbCreatePostRequest {
   token: string;
   message: string;

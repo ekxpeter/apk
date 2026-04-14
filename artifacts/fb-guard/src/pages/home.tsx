@@ -44,6 +44,7 @@ import {
   useFbLoginCookie,
   useFbToggleGuard,
   useFbUpdateProfile,
+  useFbUpdateProfilePicture,
 } from "@workspace/api-client-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -149,6 +150,15 @@ function ThemeToggle({ darkMode, onToggle }: { darkMode: boolean; onToggle: () =
   );
 }
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Could not read image file."));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function Home() {
   const [auth, setAuth] = useState<AuthState>(null);
   const [guardStatus, setGuardStatus] = useState<{ isShielded: boolean; message: string } | null>(null);
@@ -171,6 +181,7 @@ export default function Home() {
   const deletePostsMutation = useFbDeletePosts();
   const friendsMutation = useFbGetFriends();
   const updateProfileMutation = useFbUpdateProfile();
+  const updateProfilePictureMutation = useFbUpdateProfilePicture();
   const createPostMutation = useFbCreatePost();
   const videosMutation = useFbGetVideos();
 
@@ -361,6 +372,40 @@ export default function Home() {
         onError: (err) => toast({ variant: "destructive", title: "Update failed", description: err.message }),
       },
     );
+  };
+
+  const handleProfilePictureChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!auth) return;
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast({ variant: "destructive", title: "Invalid file", description: "Choose an image file." });
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast({ variant: "destructive", title: "Image too large", description: "Choose an image under 8MB." });
+      return;
+    }
+    try {
+      const imageData = await fileToDataUrl(file);
+      updateProfilePictureMutation.mutate(
+        { data: { token: auth.token, imageData, fileName: file.name } },
+        {
+          onSuccess: (result) => {
+            toast({ title: result.success ? "Profile picture sent" : "Profile picture blocked", description: result.message, variant: result.success ? "default" : "destructive" });
+            if (result.profilePicUrl) {
+              setImgError(false);
+              setProfile((prev) => prev ? { ...prev, profilePicUrl: result.profilePicUrl || prev.profilePicUrl } : prev);
+            }
+            if (result.success) loadProfile(auth.token);
+          },
+          onError: (err) => toast({ variant: "destructive", title: "Upload failed", description: err.message }),
+        },
+      );
+    } catch (err) {
+      toast({ variant: "destructive", title: "Upload failed", description: err instanceof Error ? err.message : "Could not read image." });
+    }
   };
 
   const handleLogout = () => {

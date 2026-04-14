@@ -218,6 +218,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fb/profile-picture:
+    post:
+      operationId: fbUpdateProfilePicture
+      tags: [facebook]
+      summary: Update profile picture
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbUpdateProfilePictureRequest"
+      responses:
+        "200":
+          description: Profile picture update result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbUpdateProfilePictureResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /fb/posts/create:
     post:
       operationId: fbCreatePost
@@ -477,6 +501,31 @@ components:
         - message
         - appliedFields
         - failedFields
+    FbUpdateProfilePictureRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        imageData:
+          type: string
+        fileName:
+          type: string
+      required:
+        - token
+        - imageData
+        - fileName
+    FbUpdateProfilePictureResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        profilePicUrl:
+          type: string
+      required:
+        - success
+        - message
     FbCreatePostRequest:
       type: object
       properties:

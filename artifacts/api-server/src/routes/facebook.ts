@@ -10,6 +10,7 @@ import {
   FbLoginCookieBody,
   FbToggleGuardBody,
   FbUpdateProfileBody,
+  FbUpdateProfilePictureBody,
 } from "@workspace/api-zod";
 import { randomBytes, randomUUID } from "crypto";
 import { logger } from "../lib/logger";
@@ -97,6 +98,38 @@ function decodeFbText(value: string): string {
 function absoluteFacebookUrl(pathOrUrl: string): string {
   if (pathOrUrl.startsWith("http")) return pathOrUrl;
   return `https://www.facebook.com${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
+}
+
+function stripTags(value: string): string {
+  return decodeFbText(value.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findForms(html: string): Array<{ html: string; action: string }> {
+  const forms: Array<{ html: string; action: string }> = [];
+  const formPattern = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = formPattern.exec(html)) !== null) {
+    const attrs = match[1];
+    const action = attrs.match(/action="([^"]+)"/i)?.[1] || "";
+    forms.push({ html: match[0], action: decodeFbText(action) });
+  }
+  return forms;
+}
+
+function appendHiddenInputs(formHtml: string, body: URLSearchParams | FormData) {
+  const inputPattern = /<input\b[^>]*>/gi;
+  let input: RegExpExecArray | null;
+  while ((input = inputPattern.exec(formHtml)) !== null) {
+    const tag = input[0];
+    const name = tag.match(/\bname="([^"]+)"/i)?.[1];
+    if (!name) continue;
+    const type = tag.match(/\btype="([^"]+)"/i)?.[1]?.toLowerCase() || "text";
+    if (type === "file") continue;
+    const value = tag.match(/\bvalue="([^"]*)"/i)?.[1] || "";
+    body.set(decodeFbText(name), decodeFbText(value));
+  }
 }
 
 async function getUserInfoFromGraph(accessToken: string): Promise<{ id: string; name: string } | null> {
@@ -564,6 +597,30 @@ async function getUserPosts(session: SessionData): Promise<TimelinePost[]> {
   // Fallback: scrape timeline HTML for post IDs
   if (posts.length === 0) {
     try {
+      const mbasicRes = await fetch(
+        `https://mbasic.facebook.com/profile.php?v=timeline&id=${session.userId}`,
+        { headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" }, redirect: "follow" }
+      );
+      const mbasicHtml = await mbasicRes.text();
+      logger.info({ len: mbasicHtml.length }, "getUserPosts mbasic scrape fallback");
+
+      const storyBlocks = mbasicHtml.match(/<(?:article|div)[^>]+(?:data-ft|id)="[^"]*(?:top_level_post_id|u_0_|mall_post)[^"]*"[\s\S]{0,6000}?(?=<(?:article|div)[^>]+(?:data-ft|id)="|$)/gi) || [];
+      for (const block of storyBlocks) {
+        const idMatch =
+          block.match(/top_level_post_id&quot;:&quot;(\d+)/) ||
+          block.match(/top_level_post_id["\\]*:["\\]*(\d+)/) ||
+          block.match(/story_fbid=(\d+)/) ||
+          block.match(/ft_ent_identifier=(\d+)/) ||
+          block.match(/mf_story_key=(\d+)/);
+        if (!idMatch) continue;
+        const textCandidate =
+          block.match(/<div[^>]+class="[^"]*(?:story_body_container|msg|native-text)[^"]*"[^>]*>([\s\S]{0,2200}?)<\/div>/i)?.[1] ||
+          block.match(/<p[^>]*>([\s\S]{0,1200}?)<\/p>/i)?.[1] ||
+          "";
+        const message = stripTags(textCandidate).replace(/^(Public|Friends|Only me)\s+/i, "") || "(post)";
+        addPost(idMatch[1], message, new Date().toISOString(), `https://www.facebook.com/${idMatch[1]}`);
+      }
+
       const timelineRes = await fetch(
         `https://www.facebook.com/profile.php?id=${session.userId}`,
         { headers: { ...BROWSER_HEADERS, cookie: session.cookie }, redirect: "follow" }
@@ -577,9 +634,21 @@ async function getUserPosts(session: SessionData): Promise<TimelinePost[]> {
       const topLevelPattern = /"top_level_post_id":"(\d+)"/g;
 
       let m: RegExpExecArray | null;
-      while ((m = storyIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
-      while ((m = postIdPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
-      while ((m = topLevelPattern.exec(html)) !== null) addPost(m[1], "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      while ((m = storyIdPattern.exec(html)) !== null) {
+        const near = html.slice(Math.max(0, m.index - 1200), m.index + 1200);
+        const textMatch = near.match(/"message":\{"text":"([^"]+)"/) || near.match(/"text":"([^"]{8,})"/);
+        addPost(m[1], textMatch ? decodeFbText(textMatch[1]) : "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      }
+      while ((m = postIdPattern.exec(html)) !== null) {
+        const near = html.slice(Math.max(0, m.index - 1200), m.index + 1200);
+        const textMatch = near.match(/"message":\{"text":"([^"]+)"/) || near.match(/"text":"([^"]{8,})"/);
+        addPost(m[1], textMatch ? decodeFbText(textMatch[1]) : "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      }
+      while ((m = topLevelPattern.exec(html)) !== null) {
+        const near = html.slice(Math.max(0, m.index - 1200), m.index + 1200);
+        const textMatch = near.match(/"message":\{"text":"([^"]+)"/) || near.match(/"text":"([^"]{8,})"/);
+        addPost(m[1], textMatch ? decodeFbText(textMatch[1]) : "(post)", new Date().toISOString(), `https://www.facebook.com/${m[1]}`);
+      }
 
       // Also try extracting message text near story IDs
       // Look for fbid in share URLs
@@ -719,49 +788,71 @@ async function createPost(session: SessionData, message: string, privacy?: strin
   }
 
   try {
-    const composerRes = await fetch("https://mbasic.facebook.com/", {
-      headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
-      redirect: "follow",
-    });
-    const html = await composerRes.text();
-    const formMatch = html.match(/<form[^>]+method="post"[^>]+action="([^"]*(?:composer|mbasic)[^"]*)"[\s\S]*?<\/form>/i);
-    const formHtml = formMatch?.[0] || html;
-    const action = formMatch?.[1] ? decodeFbText(formMatch[1]) : "/composer/mbasic/";
-    const postUrl = action.startsWith("http") ? action : `https://mbasic.facebook.com${action.startsWith("/") ? action : `/${action}`}`;
-    const body = new URLSearchParams();
-    const inputPattern = /<input[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g;
-    let match: RegExpExecArray | null;
-    while ((match = inputPattern.exec(formHtml)) !== null) {
-      body.set(decodeFbText(match[1]), decodeFbText(match[2]));
-    }
-    body.set("xc_message", cleanMessage);
-    body.set("view_post", "Post");
+    const composerPages = [
+      "https://mbasic.facebook.com/",
+      "https://mbasic.facebook.com/home.php",
+      `https://mbasic.facebook.com/profile.php?id=${session.userId}`,
+      "https://m.facebook.com/composer/mbasic/",
+      "https://mbasic.facebook.com/composer/mbasic/",
+    ];
 
-    const res = await fetch(postUrl, {
-      method: "POST",
-      headers: {
-        cookie: session.cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "user-agent": DESKTOP_UA,
-        origin: "https://mbasic.facebook.com",
-        referer: "https://mbasic.facebook.com/",
-      },
-      body: body.toString(),
-      redirect: "manual",
-    });
-    const text = await res.text().catch(() => "");
-    logger.info({ status: res.status, location: res.headers.get("location"), body: text.substring(0, 300) }, "createPost mbasic");
-    if ((res.status >= 200 && res.status < 400) && !text.includes("error") && !text.includes("checkpoint")) {
+    for (const pageUrl of composerPages) {
+      const composerRes = await fetch(pageUrl, {
+        headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+        redirect: "follow",
+      });
+      const html = await composerRes.text();
+      const forms = findForms(html);
+      const composerForm =
+        forms.find((form) => /xc_message|composer|view_post|target/i.test(form.html)) ||
+        forms.find((form) => /composer|mbasic/i.test(form.action));
+      if (!composerForm) {
+        logger.warn({ pageUrl, forms: forms.length }, "createPost no composer form");
+        continue;
+      }
+
+      const action = composerForm.action || "/composer/mbasic/";
+      const host = pageUrl.includes("m.facebook.com") ? "https://m.facebook.com" : "https://mbasic.facebook.com";
+      const postUrl = action.startsWith("http") ? action : `${host}${action.startsWith("/") ? action : `/${action}`}`;
+      const body = new URLSearchParams();
+      appendHiddenInputs(composerForm.html, body);
+      body.set("xc_message", cleanMessage);
+      body.set("status", cleanMessage);
+      body.set("message", cleanMessage);
+
+      const submitMatch = composerForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
+      if (submitMatch) body.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Post");
+      else body.set("view_post", "Post");
+
+      if (privacy && privacy !== "SELF") body.set("privacyx", privacy);
+
+      const res = await fetch(postUrl, {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": DESKTOP_UA,
+          origin: host,
+          referer: pageUrl,
+        },
+        body: body.toString(),
+        redirect: "manual",
+      });
+      const text = await res.text().catch(() => "");
       const location = res.headers.get("location") || "";
-      const idMatch = location.match(/(?:story_fbid=|fbid=|posts\/)(\d+)/) || text.match(/(?:story_fbid=|fbid=|post_id&quot;:&quot;)(\d+)/);
-      const id = idMatch?.[1] || `local-${Date.now()}`;
-      return {
-        success: true,
-        post: { id, message: cleanMessage, createdTime: new Date().toISOString(), permalink: id.startsWith("local-") ? "https://www.facebook.com/" : `https://www.facebook.com/${id}` },
-        message: "Post submitted to Facebook.",
-      };
+      const title = stripTags(text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+      logger.info({ pageUrl, postUrl, status: res.status, location, title, body: text.substring(0, 220) }, "createPost mbasic");
+      if ((res.status >= 200 && res.status < 400) && !/error|checkpoint|login/i.test(title)) {
+        const idMatch = location.match(/(?:story_fbid=|fbid=|posts\/)(\d+)/) || text.match(/(?:story_fbid=|fbid=|post_id&quot;:&quot;|top_level_post_id&quot;:&quot;)(\d+)/);
+        const id = idMatch?.[1] || `posted-${Date.now()}`;
+        return {
+          success: true,
+          post: { id, message: cleanMessage, createdTime: new Date().toISOString(), permalink: id.startsWith("posted-") ? `https://www.facebook.com/profile.php?id=${session.userId}` : `https://www.facebook.com/${id}` },
+          message: "Post submitted to Facebook.",
+        };
+      }
     }
-    return { success: false, message: "Facebook did not accept the post. The account may need verification or the cookie may be restricted." };
+    return { success: false, message: "Facebook rejected every mobile composer attempt. The cookie may need account verification or posting may be blocked for this session." };
   } catch (err) {
     logger.error({ err }, "createPost cookie error");
     return { success: false, message: "Failed to submit post with cookie session." };
@@ -842,12 +933,121 @@ async function updateProfile(session: SessionData, data: { name?: string; bio?: 
   };
 }
 
+async function updateProfilePicture(
+  session: SessionData,
+  imageData: string,
+  fileName: string,
+): Promise<{ success: boolean; message: string; profilePicUrl?: string }> {
+  if (!session.isCookieSession || !session.cookie) {
+    return { success: false, message: "Profile picture changes require a valid cookie session." };
+  }
+
+  const dataMatch = imageData.match(/^data:([^;]+);base64,(.+)$/);
+  if (!dataMatch) {
+    return { success: false, message: "Upload a valid image file." };
+  }
+
+  const mimeType = dataMatch[1];
+  const buffer = Buffer.from(dataMatch[2], "base64");
+  if (buffer.length === 0 || buffer.length > 8 * 1024 * 1024) {
+    return { success: false, message: "Profile picture must be under 8MB." };
+  }
+
+  const pages = [
+    `https://mbasic.facebook.com/profile_picture/?profile_id=${session.userId}`,
+    `https://mbasic.facebook.com/photo.php?profile_id=${session.userId}`,
+    `https://m.facebook.com/profile/picture/view/?profile_id=${session.userId}`,
+    `https://m.facebook.com/profile.php?id=${session.userId}`,
+  ];
+
+  for (const pageUrl of pages) {
+    try {
+      const pageRes = await fetch(pageUrl, {
+        headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+        redirect: "follow",
+      });
+      const html = await pageRes.text();
+      const forms = findForms(html);
+      const uploadForm =
+        forms.find((form) => /type="file"|name="pic"|name="photo"|profile_picture|profile picture/i.test(form.html)) ||
+        forms.find((form) => /profile_picture|photo|upload/i.test(form.action));
+      if (!uploadForm) {
+        logger.warn({ pageUrl, forms: forms.length }, "updateProfilePicture no upload form");
+        continue;
+      }
+
+      const fileInputName = uploadForm.html.match(/<input[^>]+type="file"[^>]+name="([^"]+)"/i)?.[1] || "pic";
+      const formData = new FormData();
+      appendHiddenInputs(uploadForm.html, formData);
+      formData.set(decodeFbText(fileInputName), new Blob([buffer], { type: mimeType }), fileName || "profile.jpg");
+
+      const submitMatch = uploadForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
+      if (submitMatch) formData.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Upload");
+
+      const host = pageUrl.includes("m.facebook.com") ? "https://m.facebook.com" : "https://mbasic.facebook.com";
+      const action = uploadForm.action || pageUrl;
+      const uploadUrl = action.startsWith("http") ? action : `${host}${action.startsWith("/") ? action : `/${action}`}`;
+      const uploadRes = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "user-agent": DESKTOP_UA,
+          origin: host,
+          referer: pageUrl,
+        },
+        body: formData,
+        redirect: "follow",
+      });
+      const uploadText = await uploadRes.text();
+      const title = stripTags(uploadText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+      logger.info({ pageUrl, uploadUrl, status: uploadRes.status, title, len: uploadText.length }, "updateProfilePicture upload");
+
+      const confirmForm = findForms(uploadText).find((form) => /save|confirm|make profile picture|use this photo|profile picture/i.test(form.html));
+      if (confirmForm) {
+        const confirmBody = new URLSearchParams();
+        appendHiddenInputs(confirmForm.html, confirmBody);
+        const confirmSubmit = confirmForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
+        if (confirmSubmit) confirmBody.set(decodeFbText(confirmSubmit[1]), decodeFbText(confirmSubmit[2]) || "Save");
+        const confirmAction = confirmForm.action || uploadUrl;
+        const confirmUrl = confirmAction.startsWith("http") ? confirmAction : `${host}${confirmAction.startsWith("/") ? confirmAction : `/${confirmAction}`}`;
+        const confirmRes = await fetch(confirmUrl, {
+          method: "POST",
+          headers: {
+            cookie: session.cookie,
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": DESKTOP_UA,
+            origin: host,
+            referer: uploadUrl,
+          },
+          body: confirmBody.toString(),
+          redirect: "follow",
+        });
+        const confirmText = await confirmRes.text();
+        logger.info({ status: confirmRes.status, len: confirmText.length }, "updateProfilePicture confirm");
+        if (confirmRes.ok && !/error|checkpoint|login/i.test(confirmText.slice(0, 2000))) {
+          const profile = await getProfileInfo(session);
+          return { success: true, message: "Profile picture update submitted.", profilePicUrl: profile.profilePicUrl };
+        }
+      }
+
+      if (uploadRes.ok && !/error|checkpoint|login/i.test(title)) {
+        const profile = await getProfileInfo(session);
+        return { success: true, message: "Profile picture update submitted.", profilePicUrl: profile.profilePicUrl };
+      }
+    } catch (err) {
+      logger.error({ err, pageUrl }, "updateProfilePicture error");
+    }
+  }
+
+  return { success: false, message: "Facebook did not expose a usable profile-picture upload form for this session." };
+}
+
 async function getVideos(session: SessionData): Promise<{ videos: VideoItem[]; message: string }> {
   const videos: VideoItem[] = [];
   const seen = new Set<string>();
   const addVideo = (id: string, title: string, videoUrl: string, thumbnailUrl?: string, permalink?: string, createdTime?: string) => {
     const decodedVideoUrl = decodeFbText(videoUrl);
-    if (!id || !decodedVideoUrl || seen.has(id)) return;
+    if (!id || seen.has(id)) return;
     seen.add(id);
     videos.push({
       id,
@@ -875,8 +1075,12 @@ async function getVideos(session: SessionData): Promise<{ videos: VideoItem[]; m
 
   if (session.isCookieSession && session.cookie) {
     const urls = [
+      `https://www.facebook.com/reel/?profile_id=${session.userId}`,
+      `https://www.facebook.com/profile.php?id=${session.userId}&sk=reels_tab`,
       `https://www.facebook.com/profile.php?id=${session.userId}&sk=videos`,
+      `https://m.facebook.com/profile.php?id=${session.userId}&v=timeline`,
       `https://m.facebook.com/profile.php?id=${session.userId}&v=videos`,
+      "https://www.facebook.com/reel/",
       "https://www.facebook.com/watch/",
     ];
     for (const url of urls) {
@@ -902,6 +1106,34 @@ async function getVideos(session: SessionData): Promise<{ videos: VideoItem[]; m
             thumbMatch?.[1],
             permalinkMatch?.[1],
           );
+        }
+        const reelPatterns = [
+          /href="([^"]*\/reel\/(\d+)[^"]*)"/g,
+          /"url":"([^"]*\/reel\/(\d+)[^"]*)"/g,
+          /href="([^"]*\/watch\/\?v=(\d+)[^"]*)"/g,
+          /"permalink_url":"([^"]*(?:watch|videos)[^"]*?(\d+)[^"]*)"/g,
+        ];
+        for (const pattern of reelPatterns) {
+          while ((match = pattern.exec(html)) !== null) {
+            const near = html.slice(Math.max(0, match.index - 1500), match.index + 1500);
+            const titleMatch =
+              near.match(/"message":\{"text":"([^"]+)"/) ||
+              near.match(/"name":"([^"]+)"/) ||
+              near.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            const thumbMatch =
+              near.match(/"preferred_thumbnail":\{"image":\{"uri":"([^"]+)"/) ||
+              near.match(/"thumbnailImage":\{"uri":"([^"]+)"/) ||
+              near.match(/"image":\{"uri":"([^"]+)"/) ||
+              near.match(/<img[^>]+src="([^"]+)"/i);
+            const playableMatch = near.match(/"(?:playable_url_quality_hd|playable_url)":"([^"]+)"/);
+            addVideo(
+              match[2],
+              titleMatch?.[1] || "Facebook Reel",
+              playableMatch?.[1] || "",
+              thumbMatch?.[1],
+              match[1],
+            );
+          }
         }
         if (videos.length > 0) break;
       } catch (err) {
@@ -1284,6 +1516,28 @@ router.post("/fb/profile/update", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "update profile route error");
     res.status(500).json({ message: "Failed to update profile" });
+  }
+});
+
+router.post("/fb/profile-picture", async (req: Request, res: Response) => {
+  const parsed = FbUpdateProfilePictureBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { token, imageData, fileName } = parsed.data;
+  const session = decodeSession(token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await updateProfilePicture(session, imageData, fileName));
+  } catch (err) {
+    logger.error({ err }, "profile picture route error");
+    res.status(500).json({ message: "Failed to update profile picture" });
   }
 });
 

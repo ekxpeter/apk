@@ -23,6 +23,8 @@ export * from "./fbPostsResponse";
 export * from "./fbProfileResponse";
 export * from "./fbProfileResponseParsedCookies";
 export * from "./fbTokenRequest";
+export * from "./fbUpdateProfilePictureRequest";
+export * from "./fbUpdateProfilePictureResponse";
 export * from "./fbUpdateProfileRequest";
 export * from "./fbUpdateProfileResponse";
 export * from "./fbVideo";

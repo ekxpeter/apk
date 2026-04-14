@@ -31,6 +31,8 @@ import type {
   FbPostsResponse,
   FbProfileResponse,
   FbTokenRequest,
+  FbUpdateProfilePictureRequest,
+  FbUpdateProfilePictureResponse,
   FbUpdateProfileRequest,
   FbUpdateProfileResponse,
   FbVideosResponse,
@@ -808,6 +810,96 @@ export const useFbUpdateProfile = <
   TContext
 > => {
   return useMutation(getFbUpdateProfileMutationOptions(options));
+};
+
+/**
+ * @summary Update profile picture
+ */
+export const getFbUpdateProfilePictureUrl = () => {
+  return `/api/fb/profile-picture`;
+};
+
+export const fbUpdateProfilePicture = async (
+  fbUpdateProfilePictureRequest: FbUpdateProfilePictureRequest,
+  options?: RequestInit,
+): Promise<FbUpdateProfilePictureResponse> => {
+  return customFetch<FbUpdateProfilePictureResponse>(
+    getFbUpdateProfilePictureUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(fbUpdateProfilePictureRequest),
+    },
+  );
+};
+
+export const getFbUpdateProfilePictureMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUpdateProfilePicture>>,
+    TError,
+    { data: BodyType<FbUpdateProfilePictureRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbUpdateProfilePicture>>,
+  TError,
+  { data: BodyType<FbUpdateProfilePictureRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbUpdateProfilePicture"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbUpdateProfilePicture>>,
+    { data: BodyType<FbUpdateProfilePictureRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return fbUpdateProfilePicture(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbUpdateProfilePictureMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbUpdateProfilePicture>>
+>;
+export type FbUpdateProfilePictureMutationBody =
+  BodyType<FbUpdateProfilePictureRequest>;
+export type FbUpdateProfilePictureMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Update profile picture
+ */
+export const useFbUpdateProfilePicture = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUpdateProfilePicture>>,
+    TError,
+    { data: BodyType<FbUpdateProfilePictureRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbUpdateProfilePicture>>,
+  TError,
+  { data: BodyType<FbUpdateProfilePictureRequest> },
+  TContext
+> => {
+  return useMutation(getFbUpdateProfilePictureMutationOptions(options));
 };
 
 /**
