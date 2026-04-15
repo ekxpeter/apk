@@ -2004,153 +2004,270 @@ async function sharePostViaGraphApi(eaagToken: string, postUrl: string): Promise
 
 const MOBILE_SHARE_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36";
 
-async function sharePostViaMbasic(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
-  const encodedUrl = encodeURIComponent(postUrl);
-  const sharePageUrl = `https://mbasic.facebook.com/sharer.php?u=${encodedUrl}`;
+// Known stable doc_ids for Facebook share/composer mutations - try all of them
+const SHARE_DOC_IDS = [
+  "6936722669765390",
+  "7802958166448820",
+  "8462087963851803",
+  "6462309453838527",
+  "8017700888260970",
+  "7090169124374940",
+  "5765985773472862",
+];
 
+async function extractShareDocId(cookie: string): Promise<string | null> {
   try {
-    const res = await fetch(sharePageUrl, {
-      headers: {
-        "user-agent": MOBILE_SHARE_UA,
-        "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
-        "accept-language": "en-US,en;q=0.9",
-        "cookie": session.cookie,
-        "referer": "https://mbasic.facebook.com/",
-      },
+    const res = await fetch("https://www.facebook.com/", {
+      headers: { ...BROWSER_HEADERS, cookie },
       redirect: "follow",
     });
-
     const html = await res.text();
-    logger.info({ status: res.status, htmlLen: html.length, url: sharePageUrl }, "mbasic share page");
-
-    if (html.includes("You must log in") || html.includes("login") && !html.includes("logout")) {
-      return { ok: false, errorMsg: "Session expired — cookies are no longer valid" };
-    }
-
-    const forms = findForms(html);
-    logger.info({ formCount: forms.length, actions: forms.map((f) => f.action) }, "mbasic share forms");
-
-    const shareForm =
-      forms.find((f) => f.action.includes("sharer") || f.action.includes("share") || f.action.includes("composer")) ||
-      forms[0];
-
-    if (!shareForm) {
-      logger.warn({ htmlSnippet: html.substring(0, 500) }, "no share form on mbasic page");
-      return { ok: false, errorMsg: "No share form found on mbasic page" };
-    }
-
-    const body = new URLSearchParams();
-    appendHiddenInputs(shareForm.html, body);
-
-    if (session.dtsg && !body.has("fb_dtsg")) {
-      body.set("fb_dtsg", session.dtsg);
-    }
-    body.set("link", postUrl);
-    body.set("u", postUrl);
-
-    const action = shareForm.action.startsWith("http")
-      ? shareForm.action
-      : `https://mbasic.facebook.com${shareForm.action.startsWith("/") ? shareForm.action : `/${shareForm.action}`}`;
-
-    logger.info({ action, bodyKeys: Array.from(body.keys()) }, "submitting mbasic share form");
-
-    const postRes = await fetch(action, {
-      method: "POST",
-      headers: {
-        "user-agent": MOBILE_SHARE_UA,
-        "content-type": "application/x-www-form-urlencoded",
-        "cookie": session.cookie,
-        "referer": sharePageUrl,
-        "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
-        "accept-language": "en-US,en;q=0.9",
-        "origin": "https://mbasic.facebook.com",
-      },
-      body: body.toString(),
-      redirect: "follow",
-    });
-
-    const postHtml = await postRes.text();
-    logger.info({ status: postRes.status, htmlLen: postHtml.length }, "mbasic share POST result");
-
-    if (postRes.status >= 200 && postRes.status < 400) {
-      if (
-        postHtml.includes("checkpoint") ||
-        postHtml.includes("You must log in") ||
-        postHtml.includes("an error occurred")
-      ) {
-        return { ok: false, errorMsg: "Facebook blocked the share (checkpoint or error page)" };
+    const patterns = [
+      /CometComposerStoryCreateMutation[^}]{0,50}"id":"(\d{10,20})"/,
+      /ComposerStoryCreate[^}]{0,50}"id":"(\d{10,20})"/,
+      /"share_story"[^}]{0,50}"id":"(\d{10,20})"/,
+      /story_create[^}]{0,50}"id":"(\d{10,20})"/,
+    ];
+    for (const pat of patterns) {
+      const m = html.match(pat);
+      if (m) {
+        logger.info({ docId: m[1], pat: pat.toString().substring(0, 60) }, "Extracted share doc_id from page");
+        return m[1];
       }
-      return { ok: true };
     }
-
-    return { ok: false, errorMsg: `HTTP ${postRes.status} from share submit` };
   } catch (err) {
-    logger.error({ err }, "sharePostViaMbasic error");
-    return { ok: false, errorMsg: `Network error: ${String(err)}` };
+    logger.error({ err }, "extractShareDocId error");
   }
+  return null;
 }
 
-async function sharePostViaWwwComposer(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
-  const encodedUrl = encodeURIComponent(postUrl);
-  const sharePageUrl = `https://www.facebook.com/share/?link=${encodedUrl}`;
+async function shareViaGraphQL(session: SessionData, postUrl: string, cachedDocId?: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  if (!session.dtsg) return { ok: false, errorMsg: "No dtsg token in session" };
 
-  try {
-    const res = await fetch(sharePageUrl, {
-      headers: {
-        ...BROWSER_HEADERS,
-        "cookie": session.cookie,
-        "referer": "https://www.facebook.com/",
-      },
-      redirect: "follow",
-    });
+  const docIdsToTry = cachedDocId ? [cachedDocId, ...SHARE_DOC_IDS] : SHARE_DOC_IDS;
 
-    const html = await res.text();
-    logger.info({ status: res.status, htmlLen: html.length }, "www share page");
+  for (const docId of docIdsToTry) {
+    try {
+      const variables = JSON.stringify({
+        input: {
+          actor_id: session.userId,
+          attachments: [{
+            link: {
+              share_scrape_data: { uri: postUrl, secret: "", is_final: false },
+              message: { text: "" },
+            },
+          }],
+          composer_entry_point: "self_m_composer",
+          message: { text: "" },
+          source: "WWW_TIMELINE",
+          story_target_data: { profile_id: session.userId },
+          client_mutation_id: Math.random().toString(36).substring(2),
+        },
+        dpr: 2,
+      });
 
-    if (html.includes("You must log in")) {
-      return { ok: false, errorMsg: "Session expired" };
+      const body = new URLSearchParams({
+        av: session.userId,
+        __user: session.userId,
+        __a: "1",
+        __req: Math.random().toString(36).substring(2, 5),
+        fb_dtsg: session.dtsg,
+        doc_id: docId,
+        variables,
+        fb_api_caller_class: "RelayModern",
+        fb_api_req_friendly_name: "CometComposerStoryCreateMutation",
+      });
+
+      const lsd = session.lsd || session.dtsg.substring(0, 10);
+      body.set("lsd", lsd);
+
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: {
+          ...BROWSER_HEADERS,
+          "content-type": "application/x-www-form-urlencoded",
+          "cookie": session.cookie,
+          "x-fb-friendly-name": "CometComposerStoryCreateMutation",
+          "x-fb-lsd": lsd,
+          "referer": "https://www.facebook.com/",
+          "origin": "https://www.facebook.com",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "GraphQL share response");
+
+      if (res.status === 200) {
+        let result: Record<string, unknown> = {};
+        try { result = JSON.parse(text); } catch { /* might have prefix */ }
+
+        // Also try stripping the for (;;); prefix that Facebook sometimes adds
+        let cleanText = text;
+        if (text.startsWith("for (;;);")) cleanText = text.slice(9);
+        try { result = JSON.parse(cleanText); } catch { /* ignore */ }
+
+        const resultStr = JSON.stringify(result);
+        if (
+          resultStr.includes("story_create") ||
+          resultStr.includes("story_id") ||
+          resultStr.includes('"id"') && !resultStr.includes('"errors"')
+        ) {
+          if (!resultStr.includes('"errors"') || resultStr.includes('"story_create"')) {
+            logger.info({ docId }, "GraphQL share succeeded");
+            return { ok: true };
+          }
+        }
+
+        // If we get a specific error about the doc_id, try next
+        if (resultStr.includes("Unknown document") || resultStr.includes("doc_id")) {
+          logger.warn({ docId }, "doc_id not recognized, trying next");
+          continue;
+        }
+      }
+    } catch (err) {
+      logger.error({ err, docId }, "GraphQL share error");
     }
-
-    const forms = findForms(html);
-    const shareForm = forms.find((f) => f.action.includes("share") || f.action.includes("composer")) || forms[0];
-
-    if (!shareForm) {
-      return { ok: false, errorMsg: "No share form found on www page" };
-    }
-
-    const body = new URLSearchParams();
-    appendHiddenInputs(shareForm.html, body);
-
-    if (session.dtsg && !body.has("fb_dtsg")) {
-      body.set("fb_dtsg", session.dtsg);
-    }
-
-    const action = absoluteFacebookUrl(shareForm.action);
-
-    const postRes = await fetch(action, {
-      method: "POST",
-      headers: {
-        ...BROWSER_HEADERS,
-        "content-type": "application/x-www-form-urlencoded",
-        "cookie": session.cookie,
-        "referer": sharePageUrl,
-      },
-      body: body.toString(),
-      redirect: "follow",
-    });
-
-    const postHtml = await postRes.text();
-    logger.info({ status: postRes.status, htmlLen: postHtml.length }, "www share POST result");
-
-    if (postRes.status >= 200 && postRes.status < 400 && !postHtml.includes("checkpoint")) {
-      return { ok: true };
-    }
-
-    return { ok: false, errorMsg: `HTTP ${postRes.status}` };
-  } catch (err) {
-    logger.error({ err }, "sharePostViaWwwComposer error");
-    return { ok: false, errorMsg: String(err) };
   }
+
+  return { ok: false, errorMsg: "GraphQL share: all doc_ids failed" };
+}
+
+async function shareViaMFacebook(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  const urlsToTry = [
+    `https://m.facebook.com/sharer.php?u=${encodeURIComponent(postUrl)}`,
+    `https://m.facebook.com/share/?link=${encodeURIComponent(postUrl)}`,
+    `https://m.facebook.com/share/v2/?link=${encodeURIComponent(postUrl)}`,
+  ];
+
+  for (const sharePageUrl of urlsToTry) {
+    try {
+      const res = await fetch(sharePageUrl, {
+        headers: {
+          "user-agent": MOBILE_SHARE_UA,
+          "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+          "accept-language": "en-US,en;q=0.9",
+          "cookie": session.cookie,
+          "referer": "https://m.facebook.com/",
+        },
+        redirect: "follow",
+      });
+
+      const html = await res.text();
+      logger.info({ status: res.status, htmlLen: html.length, url: sharePageUrl }, "m.facebook.com share page");
+
+      if (res.status !== 200 || html.includes("You must log in")) continue;
+
+      const forms = findForms(html);
+      logger.info({ formCount: forms.length, actions: forms.map((f) => f.action) }, "m.facebook.com share forms");
+
+      const shareForm = forms.find((f) =>
+        f.action.includes("share") || f.action.includes("sharer") || f.action.includes("composer")
+      ) || forms[0];
+
+      if (!shareForm) {
+        logger.warn({ url: sharePageUrl }, "no form on m.facebook.com share page");
+        continue;
+      }
+
+      const body = new URLSearchParams();
+      appendHiddenInputs(shareForm.html, body);
+      if (session.dtsg && !body.has("fb_dtsg")) body.set("fb_dtsg", session.dtsg);
+
+      const action = shareForm.action.startsWith("http")
+        ? shareForm.action
+        : `https://m.facebook.com${shareForm.action.startsWith("/") ? shareForm.action : `/${shareForm.action}`}`;
+
+      const postRes = await fetch(action, {
+        method: "POST",
+        headers: {
+          "user-agent": MOBILE_SHARE_UA,
+          "content-type": "application/x-www-form-urlencoded",
+          "cookie": session.cookie,
+          "referer": sharePageUrl,
+          "origin": "https://m.facebook.com",
+        },
+        body: body.toString(),
+        redirect: "follow",
+      });
+
+      const postHtml = await postRes.text();
+      logger.info({ status: postRes.status, htmlLen: postHtml.length }, "m.facebook.com share POST");
+
+      if (postRes.status >= 200 && postRes.status < 400 && !postHtml.includes("checkpoint")) {
+        return { ok: true };
+      }
+    } catch (err) {
+      logger.error({ err }, "shareViaMFacebook error");
+    }
+  }
+
+  return { ok: false, errorMsg: "m.facebook.com share failed" };
+}
+
+async function shareViaComposerLink(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  // Uses the same mbasic composer as createPost, posts the link as a status update
+  const composerPages = [
+    "https://mbasic.facebook.com/",
+    "https://mbasic.facebook.com/home.php",
+    `https://mbasic.facebook.com/profile.php?id=${session.userId}`,
+  ];
+
+  for (const pageUrl of composerPages) {
+    try {
+      const composerRes = await fetch(pageUrl, {
+        headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+        redirect: "follow",
+      });
+      const html = await composerRes.text();
+      const forms = findForms(html);
+      const composerForm =
+        forms.find((f) => /xc_message|composer|view_post|target/i.test(f.html)) ||
+        forms.find((f) => /composer|mbasic/i.test(f.action));
+
+      if (!composerForm) {
+        logger.warn({ pageUrl }, "shareViaComposerLink no form");
+        continue;
+      }
+
+      const action = composerForm.action || "/composer/mbasic/";
+      const host = "https://mbasic.facebook.com";
+      const submitUrl = action.startsWith("http") ? action : `${host}${action.startsWith("/") ? action : `/${action}`}`;
+      const body = new URLSearchParams();
+      appendHiddenInputs(composerForm.html, body);
+      body.set("xc_message", postUrl);
+      body.set("status", postUrl);
+      body.set("message", postUrl);
+
+      const submitMatch = composerForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
+      if (submitMatch) body.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Post");
+      else body.set("view_post", "Post");
+
+      const res = await fetch(submitUrl, {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": DESKTOP_UA,
+          origin: host,
+          referer: pageUrl,
+        },
+        body: body.toString(),
+        redirect: "manual",
+      });
+      const text = await res.text().catch(() => "");
+      const location = res.headers.get("location") || "";
+      logger.info({ pageUrl, status: res.status, location }, "shareViaComposerLink result");
+
+      if (res.status >= 200 && res.status < 400 && !/error|checkpoint/i.test(text.substring(0, 500))) {
+        return { ok: true };
+      }
+    } catch (err) {
+      logger.error({ err }, "shareViaComposerLink error");
+    }
+  }
+
+  return { ok: false, errorMsg: "Composer link share failed" };
 }
 
 async function runSharePost(
@@ -2162,63 +2279,67 @@ async function runSharePost(
   let success = 0;
   let failed = 0;
 
-  details.push(`Preparing to share ${count} time(s)...`);
+  details.push(`Starting ${count} share(s) using cookie session...`);
 
-  // Try to get EAAG token for Graph API fallback (non-blocking)
+  // Kick off both extractions in parallel so they're ready when needed
   let eaagToken = session.eaagToken;
-  if (!eaagToken) {
-    eaagToken = await extractEaagToken(session.cookie) ?? undefined;
-    if (eaagToken) {
-      details.push(`Access token found: ${eaagToken.substring(0, 15)}...`);
-    } else {
-      details.push("No Graph API token found — using cookie-based share method.");
-    }
-  } else {
-    details.push(`Using stored access token: ${eaagToken.substring(0, 15)}...`);
-  }
+  const eaagPromise: Promise<string | undefined> = eaagToken
+    ? Promise.resolve(eaagToken)
+    : extractEaagToken(session.cookie).then((t) => t ?? undefined);
+  const docIdPromise = extractShareDocId(session.cookie);
+
+  // Wait for doc_id (it loads the homepage, fast enough)
+  const cachedDocId = await docIdPromise;
+  if (cachedDocId) details.push(`GraphQL doc_id found: ${cachedDocId}`);
+  else details.push("GraphQL doc_id not found in page — using known IDs.");
 
   for (let i = 1; i <= count; i++) {
     let shareResult: { ok: boolean; errorMsg?: string } = { ok: false, errorMsg: "No method succeeded" };
+    let method = "";
 
-    // Method 1: mbasic share form (most reliable with just cookies)
-    shareResult = await sharePostViaMbasic(session, postUrl);
+    // Method 1: Facebook internal GraphQL API with dtsg (most direct)
+    shareResult = await shareViaGraphQL(session, postUrl, cachedDocId ?? undefined);
     if (shareResult.ok) {
-      success++;
-      details.push(`Share ${i}/${count}: ✓ Success (mbasic)`);
-    } else {
-      logger.info({ attempt: i, mbasicError: shareResult.errorMsg }, "mbasic share failed, trying www");
+      method = "GraphQL";
+    }
 
-      // Method 2: www.facebook.com share page
-      shareResult = await sharePostViaWwwComposer(session, postUrl);
-      if (shareResult.ok) {
-        success++;
-        details.push(`Share ${i}/${count}: ✓ Success (www)`);
-      } else {
-        // Method 3: Graph API with EAAG token (fallback)
-        if (eaagToken) {
-          const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
-          if (graphResult.ok) {
-            success++;
-            details.push(`Share ${i}/${count}: ✓ Success (Graph API, post ID: ${graphResult.postId})`);
-            if (graphResult.errorMsg?.includes("Token invalid")) {
-              details.push("Stopping: access token is no longer valid.");
-              failed += count - i;
-              break;
-            }
-          } else {
-            failed++;
-            details.push(`Share ${i}/${count}: ✗ Failed — ${graphResult.errorMsg || "Unknown error"}`);
-            if (graphResult.errorMsg?.includes("Token invalid")) {
-              details.push("Stopping: access token is no longer valid.");
-              failed += count - i;
-              break;
-            }
-          }
+    // Method 2: m.facebook.com share page
+    if (!shareResult.ok) {
+      shareResult = await shareViaMFacebook(session, postUrl);
+      if (shareResult.ok) method = "m.facebook";
+    }
+
+    // Method 3: mbasic composer (post link as status - confirmed working same path as createPost)
+    if (!shareResult.ok) {
+      shareResult = await shareViaComposerLink(session, postUrl);
+      if (shareResult.ok) method = "composer";
+    }
+
+    // Method 4: EAAG token + Graph API
+    if (!shareResult.ok) {
+      if (!eaagToken) eaagToken = await eaagPromise;
+      if (eaagToken) {
+        const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
+        if (graphResult.ok) {
+          shareResult = { ok: true };
+          method = `GraphAPI(${graphResult.postId})`;
         } else {
-          failed++;
-          details.push(`Share ${i}/${count}: ✗ Failed — ${shareResult.errorMsg || "Unknown error"}`);
+          shareResult = { ok: false, errorMsg: graphResult.errorMsg };
+          if (graphResult.errorMsg?.includes("Token invalid")) {
+            details.push(`Share ${i}/${count}: ✗ Token invalid — stopping.`);
+            failed += count - i + 1;
+            break;
+          }
         }
       }
+    }
+
+    if (shareResult.ok) {
+      success++;
+      details.push(`Share ${i}/${count}: ✓ Success [${method}]`);
+    } else {
+      failed++;
+      details.push(`Share ${i}/${count}: ✗ Failed — ${shareResult.errorMsg || "all methods failed"}`);
     }
 
     if (i < count) {
