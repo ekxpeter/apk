@@ -46,6 +46,7 @@ interface SessionData {
   name: string;
   isCookieSession: boolean;
   accessToken?: string;
+  lsd?: string;
 }
 
 type Friend = { id: string; name: string; profileUrl: string; pictureUrl: string };
