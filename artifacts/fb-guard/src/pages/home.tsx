@@ -258,6 +258,18 @@ export default function Home() {
     onSuccess: () => { sessionsQuery.refetch(); toast({ title: "Session removed" }); },
   });
 
+  const refreshTokenMutation = useMutation({
+    mutationFn: async (token: string) => {
+      const res = await fetch("/api/fb/refresh-token", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<{ eaagToken: string | null; found: boolean }>;
+    },
+  });
+
   const handleReact = useCallback(() => {
     if (!reactUrl.trim()) return;
     setReactLogs(["Sending reactions..."]);
@@ -933,40 +945,74 @@ export default function Home() {
 
             {/* Access Token Card */}
             <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
-              <CardHeader className="p-4 pb-0">
-                <button
-                  className="flex w-full items-center justify-between text-left"
-                  onClick={() => setShowToken((v) => !v)}
-                >
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
                   <span className="flex items-center gap-2 text-sm font-semibold">
                     <KeyRound className="h-4 w-4 text-[#1877F2]" /> Access Token
                   </span>
-                  {showToken ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
-                </button>
-              </CardHeader>
-              {showToken && (
-                <CardContent className="p-4 pt-3 space-y-3">
-                  {auth.eaagToken ? (
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-[#1877F2]">EAAG Access Token (from business.facebook.com):</p>
-                      <div className="flex items-start gap-2 rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
-                        <p className="flex-1 break-all font-mono text-xs text-slate-700 dark:text-slate-300">
-                          {auth.eaagToken}
-                        </p>
-                        <button
-                          onClick={() => copyToClipboard(auth.eaagToken!, "EAAG token")}
-                          className="mt-0.5 shrink-0 text-[#1877F2] hover:text-[#0f66d4]"
-                        >
-                          <Copy className="h-4 w-4" />
-                        </button>
-                      </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 rounded-xl text-xs"
+                    disabled={refreshTokenMutation.isPending}
+                    onClick={() => {
+                      refreshTokenMutation.mutate(auth.token, {
+                        onSuccess: (data) => {
+                          if (data.eaagToken) {
+                            setAuth((prev) => prev ? { ...prev, eaagToken: data.eaagToken! } : prev);
+                            toast({ title: "Token extracted!", description: data.eaagToken!.substring(0, 30) + "..." });
+                          } else {
+                            toast({ variant: "destructive", title: "Token not found", description: "Try a cookie with business.facebook.com access" });
+                          }
+                        },
+                        onError: () => toast({ variant: "destructive", title: "Extraction failed" }),
+                      });
+                    }}
+                  >
+                    {refreshTokenMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    <span className="ml-1">{refreshTokenMutation.isPending ? "Extracting..." : "Refresh"}</span>
+                  </Button>
+                </div>
+
+                {auth.eaagToken ? (
+                  <div>
+                    <p className="mb-1 text-xs font-semibold text-green-600 dark:text-green-400">✓ EAAG Access Token</p>
+                    <div className="flex items-start gap-2 rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
+                      <p className="flex-1 break-all font-mono text-xs text-slate-700 dark:text-slate-300">
+                        {auth.eaagToken}
+                      </p>
+                      <button
+                        onClick={() => copyToClipboard(auth.eaagToken!, "EAAG token")}
+                        className="mt-0.5 shrink-0 text-[#1877F2] hover:text-[#0f66d4]"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
                     </div>
-                  ) : (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">EAAG token not found. Cookie may not have access to business.facebook.com.</p>
-                  )}
-                  <p className="text-xs text-slate-400">UID: {auth.userId}</p>
-                </CardContent>
-              )}
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-amber-50 p-3 dark:bg-amber-950/30">
+                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">EAAG token not found</p>
+                    <p className="mt-0.5 text-xs text-amber-600 dark:text-amber-500">Click Refresh to extract from business.facebook.com</p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="mb-1 text-xs font-semibold text-slate-500">Session Token (raw)</p>
+                  <div className="flex items-start gap-2 rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
+                    <p className="flex-1 break-all font-mono text-xs text-slate-500 dark:text-slate-400">
+                      {auth.token}
+                    </p>
+                    <button
+                      onClick={() => copyToClipboard(auth.token, "Session token")}
+                      className="mt-0.5 shrink-0 text-slate-400 hover:text-[#1877F2]"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-400">UID: <span className="font-mono">{auth.userId}</span></p>
+              </CardContent>
             </Card>
 
             {profile && Object.keys(profile.parsedCookies).length > 0 && (

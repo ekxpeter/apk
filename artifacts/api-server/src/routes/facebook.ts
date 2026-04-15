@@ -2591,14 +2591,58 @@ function extractPostId(url: string): string | null {
 }
 
 // ── React to a post using a single session ────────────────────────────────────
+// Fetch fresh lsd + dtsg + doc_id for CometUFIReactionMutation from the post page
+async function fetchReactTokensFromPage(
+  postUrl: string,
+  cookie: string
+): Promise<{ lsd: string | null; dtsg: string | null; reactionDocId: string | null }> {
+  try {
+    const res = await fetch(postUrl, {
+      headers: {
+        ...BROWSER_HEADERS,
+        "cookie": cookie,
+        "accept-encoding": "identity",
+      },
+    });
+    const html = await res.text();
+
+    const lsdMatch =
+      html.match(/"LSD",\[\],\{"token":"([^"]+)"\}/) ||
+      html.match(/"LSD"[^}]*?"token":"([^"]+)"/) ||
+      html.match(/name="lsd"\s+value="([^"]+)"/) ||
+      html.match(/"lsd":"([^"]+)"/);
+
+    const dtsgMatch =
+      html.match(/"DTSGInitialData"[^}]*?"token":"([^"]+)"/) ||
+      html.match(/name="fb_dtsg"\s+value="([^"]+)"/) ||
+      html.match(/"fb_dtsg":"([^"]+)"/);
+
+    // Scrape live doc_id for CometUFIReactionMutation
+    const docIdMatch =
+      html.match(/"CometUFIReactionMutation"[^}]*?"id":"(\d{14,20})"/) ||
+      html.match(/"id":"(\d{14,20})"[^}]*?"name":"CometUFIReactionMutation"/) ||
+      html.match(/CometUFIReactionMutation.*?"(\d{14,20})"/) ||
+      html.match(/"UFIReactionMutation[^"]*"[^}]*?"id":"(\d{14,20})"/);
+
+    return {
+      lsd: lsdMatch?.[1] ?? null,
+      dtsg: dtsgMatch?.[1] ?? null,
+      reactionDocId: docIdMatch?.[1] ?? null,
+    };
+  } catch {
+    return { lsd: null, dtsg: null, reactionDocId: null };
+  }
+}
+
 async function reactWithSession(
   session: SessionData,
   postUrl: string,
   reactionType: string
 ): Promise<{ ok: boolean; errorMsg?: string }> {
-  if (!session.cookie || !session.dtsg) return { ok: false, errorMsg: "No cookie/dtsg" };
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
 
-  const actionMap: Record<string, string> = {
+  // Numeric like_type codes for /reactions/react/
+  const likeTypeMap: Record<string, string> = {
     LIKE: "1",
     LOVE: "2",
     HAHA: "4",
@@ -2606,88 +2650,121 @@ async function reactWithSession(
     SAD: "7",
     ANGRY: "8",
   };
-  const reactionCode = actionMap[reactionType] ?? "1";
+  const likeType = likeTypeMap[reactionType] ?? "1";
 
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
 
-  // Method 1: Internal /reactions/react/ endpoint
-  try {
-    const body = new URLSearchParams({
-      __user: session.userId,
-      __a: "1",
-      fb_dtsg: session.dtsg,
-      ft_ent_identifier: postId,
-      action: "ADD_LIKE",
-      like_type: reactionCode,
-      source: "1",
-      ft_ent_type: "1",
-      lsd: session.lsd || session.dtsg.substring(0, 10),
-      __req: Math.random().toString(36).substring(2, 5),
-    });
+  // Always fetch fresh tokens from the actual post page
+  const { lsd: freshLsd, dtsg: freshDtsg, reactionDocId } = await fetchReactTokensFromPage(postUrl, session.cookie);
 
-    const res = await fetch("https://www.facebook.com/reactions/react/", {
-      method: "POST",
-      headers: {
-        ...BROWSER_HEADERS,
-        "cookie": session.cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "x-requested-with": "XMLHttpRequest",
-        "referer": postUrl,
-        "origin": "https://www.facebook.com",
-      },
-      body: body.toString(),
-    });
+  const lsd = freshLsd || session.lsd || "";
+  const dtsg = freshDtsg || session.dtsg || "";
 
-    const text = await res.text();
-    logger.info({ postId, reactionType, status: res.status, body: text.substring(0, 200) }, "react /reactions/react/ response");
+  logger.info({ postId, reactionType, lsd: lsd.substring(0, 8), dtsg: dtsg.substring(0, 8), reactionDocId }, "react tokens fetched");
 
-    if (res.status >= 200 && res.status < 400) {
-      const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
-      try {
-        const json = JSON.parse(clean);
-        if (!json?.error && !json?.errorSummary) return { ok: true };
-      } catch { /* not json */ }
-      if (!text.includes('"error"') && !text.includes("checkpoint")) return { ok: true };
+  // ── Method 1: /reactions/react/ (internal AJAX endpoint) ──────────────────
+  if (lsd && dtsg) {
+    try {
+      const body = new URLSearchParams({
+        __user: session.userId,
+        __a: "1",
+        __req: Math.random().toString(36).substring(2, 6),
+        __hs: "19624.HYP:comet_pkg.2.1..0.0",
+        dpr: "1",
+        __ccg: "EXCELLENT",
+        __rev: "1015267764",
+        __s: randomBytes(3).toString("hex"),
+        __hsi: Date.now().toString(),
+        __dyn: "7xe6E5q0BovXDxyUbWl2uV-xqEhwGm9oqBgao888EuC9oqCwjE98Kux60dBCzEnxifEoxm3eKiXDADwCwjE2Kqeh1wo",
+        __csr: "",
+        lsd,
+        fb_dtsg: dtsg,
+        jazoest: (
+          Array.from(Buffer.from(dtsg))
+            .reduce((a, c) => a + c, 0) + 2
+        ).toString(),
+        ft_ent_identifier: postId,
+        action: "ADD_REACTION",
+        like_type: likeType,
+        source: "22",
+        ft_ent_type: "1",
+        attribution_id_v2: "",
+        tracking: "[]",
+      });
+
+      const res = await fetch("https://www.facebook.com/reactions/react/", {
+        method: "POST",
+        headers: {
+          ...BROWSER_HEADERS,
+          "cookie": session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "x-requested-with": "XMLHttpRequest",
+          "x-fb-lsd": lsd,
+          "referer": postUrl,
+          "origin": "https://www.facebook.com",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      logger.info({ postId, reactionType, status: res.status, body: text.substring(0, 300) }, "react /reactions/react/ response");
+
+      if (res.status >= 200 && res.status < 400) {
+        const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+        try {
+          const json = JSON.parse(clean);
+          // Success: payload present, no error key at top level
+          if (json?.payload !== undefined && !json?.error) return { ok: true };
+          if (json?.error) {
+            logger.warn({ error: json.error }, "react method 1 json error");
+          } else {
+            // No error field at all — treat as success
+            if (!text.includes('"errorSummary"') && !text.includes('"checkpoint"')) return { ok: true };
+          }
+        } catch {
+          // Not JSON — if it's short and has no error indicators, count as success
+          if (!text.includes("error") && !text.includes("checkpoint") && text.length < 5000) return { ok: true };
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "react method 1 error");
     }
-  } catch (err) {
-    logger.error({ err }, "react method 1 error");
   }
 
-  // Method 2: GraphQL CometUFIReaction mutation
-  const reactionDocIds = [
-    "9137620982958443",
-    "4217137458377948",
-    "6295820847142321",
-    "7809720935770271",
-  ];
-
-  for (const docId of reactionDocIds) {
+  // ── Method 2: GraphQL CometUFIReactionMutation with live-scraped doc_id ────
+  if (reactionDocId && lsd && dtsg) {
     try {
       const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
       const variables = JSON.stringify({
         input: {
-          action: reactionType === "LIKE" ? "ADD_LIKE" : `ADD_${reactionType}`,
+          action: `ADD_${reactionType}`,
           feedback_id: feedbackId,
           feedback_source: "TIMELINE",
           is_tracking_encrypted: true,
+          tracking: [],
           actor_id: session.userId,
           client_mutation_id: Math.random().toString(36).substring(2),
+          reaction_type: reactionType,
         },
         feedbackSource: 1,
         scale: 1,
+        useDefaultActor: false,
+        reactorActorID: session.userId,
       });
 
       const body = new URLSearchParams({
         av: session.userId,
         __user: session.userId,
         __a: "1",
-        fb_dtsg: session.dtsg,
-        doc_id: docId,
+        __req: Math.random().toString(36).substring(2, 6),
+        fb_dtsg: dtsg,
+        lsd,
+        doc_id: reactionDocId,
         variables,
         fb_api_caller_class: "RelayModern",
         fb_api_req_friendly_name: "CometUFIReactionMutation",
-        lsd: session.lsd || session.dtsg.substring(0, 10),
+        server_timestamps: "true",
       });
 
       const res = await fetch("https://www.facebook.com/api/graphql/", {
@@ -2697,6 +2774,7 @@ async function reactWithSession(
           "content-type": "application/x-www-form-urlencoded",
           "cookie": session.cookie,
           "x-fb-friendly-name": "CometUFIReactionMutation",
+          "x-fb-lsd": lsd,
           "referer": postUrl,
           "origin": "https://www.facebook.com",
         },
@@ -2704,38 +2782,83 @@ async function reactWithSession(
       });
 
       const text = await res.text();
-      logger.info({ docId, status: res.status, body: text.substring(0, 200) }, "react GraphQL response");
+      logger.info({ reactionDocId, status: res.status, body: text.substring(0, 300) }, "react GraphQL live doc_id response");
 
-      if (res.status === 200) {
-        if (!text.includes('"errors"') || text.includes('"feedback"')) {
-          return { ok: true };
-        }
-        if (text.includes("Unknown document")) continue;
+      if (res.status === 200 && !text.includes('"errors"') && text.includes('"data"')) {
+        return { ok: true };
+      }
+      if (res.status === 200 && text.includes('"feedback"')) {
+        return { ok: true };
       }
     } catch (err) {
-      logger.error({ err, docId }, "react GraphQL error");
+      logger.error({ err }, "react graphql method 2 error");
     }
   }
 
-  // Method 3: mbasic like link
+  // ── Method 3: mbasic reaction via like.php with success verification ────────
   try {
-    const likeUrl = `https://mbasic.facebook.com/a/like.php?ft_ent_identifier=${postId}&refsrc=deprecated&refid=10`;
-    const res = await fetch(likeUrl, {
+    // Step 1: GET the like page (it gives us a confirmation form to POST)
+    const likePageUrl = `https://mbasic.facebook.com/a/like.php?ft_ent_identifier=${postId}&refsrc=deprecated&refid=10`;
+    const getRes = await fetch(likePageUrl, {
+      method: "GET",
       headers: {
         "user-agent": MOBILE_UA,
         "cookie": session.cookie,
-        "referer": postUrl,
         "accept": "text/html,*/*;q=0.9",
       },
       redirect: "follow",
     });
-    const html = await res.text();
-    logger.info({ status: res.status, htmlLen: html.length }, "react mbasic like response");
-    if (res.status >= 200 && res.status < 400 && !html.includes("checkpoint")) {
+    const getHtml = await getRes.text();
+
+    // If we already see "Unlike" — reaction already applied
+    if (getHtml.toLowerCase().includes("unlike")) {
+      logger.info({ postId }, "react mbasic: already liked");
       return { ok: true };
     }
+
+    // Extract the confirmation form action URL
+    const formActionMatch = getHtml.match(/action="([^"]+like\.php[^"]+)"/);
+    if (formActionMatch) {
+      const confirmUrl = "https://mbasic.facebook.com" + formActionMatch[1].replace(/&amp;/g, "&");
+      const postBody = new URLSearchParams();
+
+      // Extract hidden form fields
+      const inputMatches = getHtml.matchAll(/name="([^"]+)"\s+value="([^"]*)"/g);
+      for (const m of inputMatches) {
+        postBody.set(m[1], m[2]);
+      }
+
+      const postRes = await fetch(confirmUrl, {
+        method: "POST",
+        headers: {
+          "user-agent": MOBILE_UA,
+          "cookie": session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "referer": likePageUrl,
+        },
+        body: postBody.toString(),
+        redirect: "follow",
+      });
+      const postHtml = await postRes.text();
+      logger.info({ status: postRes.status, htmlLen: postHtml.length, hasUnlike: postHtml.toLowerCase().includes("unlike") }, "react mbasic POST response");
+
+      if (postHtml.toLowerCase().includes("unlike") || postRes.status < 400) {
+        return { ok: true };
+      }
+    } else {
+      // Fallback: direct GET to legacy like endpoint
+      const legacyRes = await fetch(
+        `https://mbasic.facebook.com/${postId}?like_reaction_type=${likeType}&likes_source=explicit`,
+        {
+          headers: { "user-agent": MOBILE_UA, "cookie": session.cookie },
+          redirect: "follow",
+        }
+      );
+      const legacyHtml = await legacyRes.text();
+      if (legacyHtml.toLowerCase().includes("unlike")) return { ok: true };
+    }
   } catch (err) {
-    logger.error({ err }, "react mbasic error");
+    logger.error({ err }, "react mbasic method 3 error");
   }
 
   return { ok: false, errorMsg: "All reaction methods failed" };
@@ -2838,6 +2961,30 @@ router.delete("/fb/sessions/:userId", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "Failed to delete session");
     res.status(500).json({ message: "Database error" });
+  }
+});
+
+// ── /fb/refresh-token  (re-extract EAAG from an existing session) ─────────────
+router.post("/fb/refresh-token", async (req: Request, res: Response) => {
+  const sessionToken: string | undefined = req.body?.token;
+  if (!sessionToken) { res.status(400).json({ message: "token required" }); return; }
+
+  const session = decodeSession(sessionToken);
+  if (!session?.cookie) { res.status(400).json({ message: "Invalid session token" }); return; }
+
+  try {
+    const eaagToken = await extractEaagToken(session.cookie);
+    if (eaagToken) {
+      // Persist to DB
+      await db.update(savedSessionsTable)
+        .set({ eaagToken })
+        .where(eq(savedSessionsTable.userId, session.userId));
+      logger.info({ userId: session.userId, tokenPrefix: eaagToken.substring(0, 20) }, "EAAG token refreshed");
+    }
+    res.json({ eaagToken: eaagToken ?? null, found: !!eaagToken });
+  } catch (err) {
+    logger.error({ err }, "refresh-token error");
+    res.status(500).json({ message: "Failed to extract token" });
   }
 });
 
