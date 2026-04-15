@@ -194,7 +194,7 @@ export default function Home() {
   const [selectedPosts, setSelectedPosts] = useState<Set<string>>(new Set());
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
   const [showCookies, setShowCookies] = useState(false);
-  const [showToken, setShowToken] = useState(false);
+  const [showToken, setShowToken] = useState(true);
   const [imgError, setImgError] = useState(false);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("fb-guard-theme") === "dark");
   const [unfriendingIds, setUnfriendingIds] = useState<Set<string>>(new Set());

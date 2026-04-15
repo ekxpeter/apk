@@ -1916,8 +1916,21 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
   const urlsToTry = [
     "https://business.facebook.com/business_locations",
     "https://business.facebook.com/settings/",
+    "https://business.facebook.com/latest/home/",
+    "https://adsmanager.facebook.com/adsmanager/",
+    "https://www.facebook.com/adsmanager/",
     "https://www.facebook.com/settings?tab=security",
     "https://www.facebook.com/",
+    "https://m.facebook.com/",
+  ];
+
+  const tokenPatterns = [
+    /"token":"(EAAG[^"]{60,})"/,
+    /"accessToken":"(EAAG[^"]{60,})"/,
+    /access_token=(EAAG[^&"'\s]{60,})/,
+    /(EAAG[A-Za-z0-9]{80,})/,
+    /"(EAAG[^"]{80,})"/,
+    /EAAGw[A-Za-z0-9]{50,}/,
   ];
 
   for (const url of urlsToTry) {
@@ -1934,27 +1947,47 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
       });
 
       const text = await res.text();
-      const patterns = [
-        /(EAAG\w+)/,
-        /"token":"(EAAG[^"]+)"/,
-        /"accessToken":"(EAAG[^"]+)"/,
-        /(EAAG[^\s"]{80,})/,
-        /"(EAAG[^"]{80,})"/,
-        /access_token=(EAAG[^&"'\s]+)/,
-      ];
 
-      for (const pat of patterns) {
+      for (const pat of tokenPatterns) {
         const m = text.match(pat);
         if (m) {
-          const token = m[1];
-          logger.info({ url, tokenPrefix: token.substring(0, 25) }, "Found EAAG token");
-          return token;
+          const token = m[1] ?? m[0];
+          if (token.length > 60) {
+            logger.info({ url, tokenPrefix: token.substring(0, 25) }, "Found EAAG token");
+            return token;
+          }
         }
       }
     } catch (err) {
       logger.error({ err, url }, "extractEaagToken fetch error");
     }
   }
+
+  // Last resort: try the mobile b-graph auth exchange
+  try {
+    const cUserMatch = rawCookie.match(/c_user=(\d+)/);
+    const xsMatch = rawCookie.match(/xs=([^;]+)/);
+    if (cUserMatch && xsMatch) {
+      const mobileUa = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/341.0.0.16.122;]";
+      const res = await fetch(
+        `https://b-graph.facebook.com/me?access_token=&fields=id&format=json`,
+        {
+          headers: {
+            "user-agent": mobileUa,
+            "cookie": rawCookie,
+          },
+        }
+      );
+      const text = await res.text();
+      for (const pat of tokenPatterns) {
+        const m = text.match(pat);
+        if (m) {
+          const token = m[1] ?? m[0];
+          if (token.length > 60) return token;
+        }
+      }
+    }
+  } catch { /* ignore */ }
 
   return null;
 }
@@ -1998,19 +2031,20 @@ async function sharePostViaGraphApi(eaagToken: string, postUrl: string, rawCooki
         headers["cookie"] = rawCookie;
       }
 
-      // Ghost share: no_story=1 suppresses the timeline story so the share counts
-      // but never appears on the sharer's timeline — no privacy flag needed.
+      // Ghost share: no_story=1 suppresses timeline story + privacy=SELF as double-lock
+      // Share counter increments but the post is completely invisible to the sharer.
+      const ghostPrivacy = encodeURIComponent(JSON.stringify({ value: "SELF" }));
       const variants = [
-        // Variant 1: POST body, no_story=1, no cookie (pure OAuth)
-        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, useCookie: false },
-        // Variant 2: POST body, no_story=1, with cookie
-        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, useCookie: true },
-        // Variant 3: URL params, no_story=1, no cookie
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, body: undefined, useCookie: false },
-        // Variant 4: URL params, no_story=1, with cookie
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, body: undefined, useCookie: true },
-        // Variant 5: URL params + published=0 + no_story=1 + cookie
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&published=0&access_token=${eaagToken}`, body: undefined, useCookie: true },
+        // Variant 1: POST body + no_story + SELF privacy, no cookie
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&privacy=${ghostPrivacy}&access_token=${eaagToken}`, useCookie: false },
+        // Variant 2: POST body + no_story + SELF privacy, with cookie
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&privacy=${ghostPrivacy}&access_token=${eaagToken}`, useCookie: true },
+        // Variant 3: URL params + no_story + SELF, no cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&privacy=${ghostPrivacy}&access_token=${eaagToken}`, body: undefined, useCookie: false },
+        // Variant 4: URL params + no_story + SELF, with cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&privacy=${ghostPrivacy}&access_token=${eaagToken}`, body: undefined, useCookie: true },
+        // Variant 5: URL params + published=0 + no_story + SELF + cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&published=0&privacy=${ghostPrivacy}&access_token=${eaagToken}`, body: undefined, useCookie: true },
       ];
 
       for (const variant of variants) {
@@ -2112,9 +2146,10 @@ async function shareViaGraphQL(session: SessionData, postUrl: string, cachedDocI
           message: { text: "" },
           source: "WWW_TIMELINE",
           story_target_data: { profile_id: session.userId },
-          // Ghost share: suppress story creation so share counts but never appears on timeline
+          // Ghost share: no_story suppresses timeline post; privacy SELF as double-lock
           no_story: true,
           should_create_story: false,
+          privacy: { allow: [], base_state: "SELF", deny: [], tag_expansion_state: "UNSPECIFIED" },
           client_mutation_id: Math.random().toString(36).substring(2),
         },
         dpr: 2,
@@ -2227,8 +2262,9 @@ async function shareViaMFacebook(session: SessionData, postUrl: string): Promise
       const body = new URLSearchParams();
       appendHiddenInputs(shareForm.html, body);
       if (session.dtsg && !body.has("fb_dtsg")) body.set("fb_dtsg", session.dtsg);
-      // Ghost share: suppress timeline story so share counts but never shows up
+      // Ghost share: no_story suppresses timeline post; privacy SELF as double-lock
       body.set("no_story", "1");
+      body.set("privacy", JSON.stringify({ value: "SELF" }));
 
       const action = shareForm.action.startsWith("http")
         ? shareForm.action
@@ -2294,8 +2330,9 @@ async function shareViaComposerLink(session: SessionData, postUrl: string): Prom
       body.set("xc_message", postUrl);
       body.set("status", postUrl);
       body.set("message", postUrl);
-      // Ghost share: suppress timeline story so share counts but never shows up
+      // Ghost share: no_story suppresses timeline post; privacy SELF as double-lock
       body.set("no_story", "1");
+      body.set("privacy", JSON.stringify({ value: "SELF" }));
 
       const submitMatch = composerForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
       if (submitMatch) body.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Post");
@@ -2345,8 +2382,9 @@ async function shareViaAjax(session: SessionData, postUrl: string): Promise<{ ok
         link: postUrl,
         share_content_type: "link",
         message: "",
-        // Ghost share: no_story=1 suppresses timeline post, share still counts
+        // Ghost share: no_story suppresses timeline post; privacy SELF as double-lock
         no_story: "1",
+        privacy: JSON.stringify({ value: "SELF" }),
         __req: Math.random().toString(36).substring(2, 5),
         lsd: session.lsd || session.dtsg.substring(0, 10),
       });
