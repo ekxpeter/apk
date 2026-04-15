@@ -1959,47 +1959,90 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
   return null;
 }
 
-async function sharePostViaGraphApi(eaagToken: string, postUrl: string): Promise<{ ok: boolean; postId?: string; errorMsg?: string }> {
+const FB_MOBILE_UA_LIST = [
+  "Mozilla/5.0 (Linux; Android 12; OnePlus 9 Build/SKQ1.210216.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/111.0.5563.116 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/335.0.0.11.118;]",
+  "Mozilla/5.0 (Linux; Android 13; Google Pixel 6a Build/TQ3A.230605.012; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/114.0.5735.196 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/340.0.0.15.119;]",
+  "Mozilla/5.0 (Linux; Android 11; SM-G998B Build/RP1A.200720.012; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/112.0.5615.136 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/336.0.0.12.120;]",
+  "Mozilla/5.0 (Linux; Android 10; Pixel 4 XL Build/QD1A.190821.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/113.0.5672.162 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/337.0.0.13.121;]",
+  "Mozilla/5.0 (Linux; Android 14; Pixel 7 Pro Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/115.0.5790.166 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/341.0.0.16.122;]",
+  "Mozilla/5.0 (Linux; Android 9; SM-G973F Build/PPR1.180610.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/110.0.5481.153 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/334.0.0.10.117;]",
+];
+
+async function sharePostViaGraphApi(eaagToken: string, postUrl: string, rawCookie?: string): Promise<{ ok: boolean; postId?: string; errorMsg?: string }> {
   const endpoints = [
     "https://graph.facebook.com/v18.0/me/feed",
+    "https://b-graph.facebook.com/v18.0/me/feed",
     "https://graph.facebook.com/v17.0/me/feed",
-    "https://graph.facebook.com/v16.0/me/feed",
+    "https://b-graph.facebook.com/v17.0/me/feed",
     "https://graph.facebook.com/me/feed",
   ];
 
   for (const endpoint of endpoints) {
     try {
-      const params = new URLSearchParams({
-        access_token: eaagToken,
-        message: "",
-        link: postUrl,
-      });
+      const ua = FB_MOBILE_UA_LIST[Math.floor(Math.random() * FB_MOBILE_UA_LIST.length)];
 
-      const res = await fetch(`${endpoint}?${params.toString()}`, {
-        method: "POST",
-        headers: {
-          "user-agent": UA_LIST[0],
-          "accept": "application/json",
-        },
-      });
-
-      const text = await res.text();
-      logger.info({ endpoint, status: res.status, body: text.substring(0, 300) }, "sharePost graph response");
-
-      let result: Record<string, unknown> = {};
-      try { result = JSON.parse(text); } catch { /* not json */ }
-
-      if (result.id) {
-        return { ok: true, postId: String(result.id) };
+      const isVideoOrReel = /video|reel|watch/i.test(postUrl);
+      const headers: Record<string, string> = {
+        "authority": "graph.facebook.com",
+        "cache-control": "max-age=0",
+        "sec-ch-ua-mobile": "?0",
+        "user-agent": ua,
+        "accept": "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      };
+      if (isVideoOrReel) {
+        headers["sec-fetch-mode"] = "cors";
+        headers["sec-fetch-site"] = "cross-site";
       }
-      if (result.error) {
-        const err = result.error as { code?: number; message?: string };
-        const msg = err.message || "Graph API error";
-        logger.warn({ error: result.error, endpoint }, "Graph API share error");
-        if (err.code === 190 || err.code === 102 || err.code === 2500) {
-          return { ok: false, errorMsg: `Token invalid: ${msg}` };
+      if (rawCookie) {
+        headers["cookie"] = rawCookie;
+      }
+
+      // Try variants: body params, URL params, with/without cookie, with/without published=0
+      const variants = [
+        // Variant 1: POST body params, no cookie (pure OAuth)
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&access_token=${eaagToken}`, useCookie: false },
+        // Variant 2: POST body params, with cookie
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&access_token=${eaagToken}`, useCookie: true },
+        // Variant 3: URL params, no cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&access_token=${eaagToken}`, body: undefined, useCookie: false },
+        // Variant 4: URL params with cookie (Python script style)
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&access_token=${eaagToken}`, body: undefined, useCookie: true },
+        // Variant 5: URL params + published=0 + cookie (exact Python script)
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&published=0&access_token=${eaagToken}`, body: undefined, useCookie: true },
+      ];
+
+      for (const variant of variants) {
+        try {
+          const fetchHeaders: Record<string, string> = { ...headers };
+          if (!variant.useCookie) delete fetchHeaders["cookie"];
+          const res = await fetch(variant.url, {
+            method: "POST",
+            headers: fetchHeaders,
+            body: variant.body,
+          });
+
+          const text = await res.text();
+          logger.info({ endpoint, variant: variant.body ? "body" : variant.url.includes("published") ? "published0" : "urlparams", cookie: variant.useCookie, status: res.status, body: text.substring(0, 300) }, "sharePost graph response");
+
+          let result: Record<string, unknown> = {};
+          try { result = JSON.parse(text); } catch { /* not json */ }
+
+          if (result.id) {
+            return { ok: true, postId: String(result.id) };
+          }
+          if (result.error) {
+            const err = result.error as { code?: number; message?: string };
+            const msg = err.message || "Graph API error";
+            logger.warn({ error: result.error, endpoint }, "Graph API share error");
+            if (err.code === 190 || err.code === 102 || err.code === 2500) {
+              return { ok: false, errorMsg: `Token invalid: ${msg}` };
+            }
+            // Don't break inner loop on other errors - try next variant
+          }
+        } catch (varErr) {
+          logger.error({ varErr, endpoint }, "sharePostViaGraphApi variant error");
         }
-        return { ok: false, errorMsg: msg };
       }
     } catch (err) {
       logger.error({ err, endpoint }, "sharePostViaGraphApi endpoint error");
@@ -2277,6 +2320,64 @@ async function shareViaComposerLink(session: SessionData, postUrl: string): Prom
   return { ok: false, errorMsg: "Composer link share failed" };
 }
 
+async function shareViaAjax(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  if (!session.dtsg) return { ok: false, errorMsg: "No dtsg in session" };
+
+  const ajaxEndpoints = [
+    "https://www.facebook.com/ajax/share/submit/",
+    "https://www.facebook.com/share/feed/",
+  ];
+
+  for (const ajaxUrl of ajaxEndpoints) {
+    try {
+      const body = new URLSearchParams({
+        __user: session.userId,
+        __a: "1",
+        fb_dtsg: session.dtsg,
+        link: postUrl,
+        share_content_type: "link",
+        message: "",
+        __req: Math.random().toString(36).substring(2, 5),
+        lsd: session.lsd || session.dtsg.substring(0, 10),
+      });
+
+      const res = await fetch(ajaxUrl, {
+        method: "POST",
+        headers: {
+          ...BROWSER_HEADERS,
+          "cookie": session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "x-requested-with": "XMLHttpRequest",
+          "x-fb-friendly-name": "share_story",
+          "x-fb-lsd": session.lsd || session.dtsg.substring(0, 10),
+          "referer": "https://www.facebook.com/",
+          "origin": "https://www.facebook.com",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      logger.info({ ajaxUrl, status: res.status, body: text.substring(0, 300) }, "shareViaAjax response");
+
+      if (res.status >= 200 && res.status < 400) {
+        const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+        try {
+          const json = JSON.parse(clean);
+          if (json?.error || json?.errorSummary) continue;
+          if (json?.payload || json?.jsmods || json?.domops) return { ok: true };
+        } catch { /* not json */ }
+        if (!text.includes("error") && !text.includes("checkpoint")) {
+          return { ok: true };
+        }
+      }
+    } catch (err) {
+      logger.error({ err, ajaxUrl }, "shareViaAjax error");
+    }
+  }
+
+  return { ok: false, errorMsg: "Ajax share failed" };
+}
+
 async function runSharePost(
   session: SessionData,
   postUrl: string,
@@ -2307,7 +2408,7 @@ async function runSharePost(
     // Method 1: EAAG token + Graph API (primary - matches Python script behavior)
     if (!eaagToken) eaagToken = await eaagPromise;
     if (eaagToken) {
-      const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
+      const graphResult = await sharePostViaGraphApi(eaagToken, postUrl, session.cookie);
       if (graphResult.ok) {
         shareResult = { ok: true };
         method = `GraphAPI(${graphResult.postId})`;
@@ -2321,19 +2422,25 @@ async function runSharePost(
       }
     }
 
-    // Method 2: Facebook internal GraphQL API with dtsg
+    // Method 2: www.facebook.com Ajax share
+    if (!shareResult.ok) {
+      shareResult = await shareViaAjax(session, postUrl);
+      if (shareResult.ok) method = "Ajax";
+    }
+
+    // Method 3: Facebook internal GraphQL API with dtsg
     if (!shareResult.ok) {
       shareResult = await shareViaGraphQL(session, postUrl, cachedDocId ?? undefined);
       if (shareResult.ok) method = "GraphQL";
     }
 
-    // Method 3: m.facebook.com share page
+    // Method 4: m.facebook.com share page
     if (!shareResult.ok) {
       shareResult = await shareViaMFacebook(session, postUrl);
       if (shareResult.ok) method = "m.facebook";
     }
 
-    // Method 4: mbasic composer (post link as status)
+    // Method 5: mbasic composer (post link as status)
     if (!shareResult.ok) {
       shareResult = await shareViaComposerLink(session, postUrl);
       if (shareResult.ok) method = "composer";
