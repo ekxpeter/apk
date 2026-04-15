@@ -1246,30 +1246,20 @@ export default function Home() {
                     </button>
                   </div>
                   <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
-                    Every cookie that logs in is saved here. Each saved account = 1 reaction.
+                    Every cookie that logs in is saved here. Each saved account = 1 reaction/comment.
                   </p>
-                  {sessionsQuery.data?.sessions.length === 0 && (
+                  {(sessionsQuery.data?.total ?? 0) === 0 ? (
                     <p className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
                       No saved accounts yet. Login with cookies to add accounts.
                     </p>
-                  )}
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {sessionsQuery.data?.sessions.map((s) => (
-                      <div key={s.userId} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-2.5 dark:bg-slate-800">
-                        <div>
-                          <div className="text-sm font-medium">{s.name}</div>
-                          <div className="text-xs text-slate-400">{s.userId} {s.hasEaagToken && <span className="ml-1 text-green-500">· token ✓</span>}</div>
-                        </div>
-                        <button
-                          onClick={() => deleteSessionMutation.mutate(s.userId)}
-                          disabled={deleteSessionMutation.isPending}
-                          className="text-red-400 hover:text-red-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                  ) : (
+                    <div className="flex items-center justify-center rounded-2xl bg-[#1877F2]/10 py-6">
+                      <div className="text-center">
+                        <div className="text-5xl font-extrabold text-[#1877F2]">{sessionsQuery.data?.total ?? 0}</div>
+                        <div className="mt-1 text-sm font-medium text-slate-500 dark:text-slate-400">accounts ready</div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
