@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { pool } from "@workspace/db";
 
 const rawPort = process.env["PORT"];
 
@@ -15,11 +16,47 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
+async function ensureTablesExist() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS saved_sessions (
+        id serial PRIMARY KEY,
+        user_id text NOT NULL UNIQUE,
+        name text NOT NULL,
+        cookie text NOT NULL,
+        dtsg text,
+        eaag_token text,
+        session_token text NOT NULL,
+        created_at timestamptz DEFAULT now(),
+        updated_at timestamptz DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS reactions (
+        id serial PRIMARY KEY,
+        post_url text NOT NULL,
+        user_id text NOT NULL,
+        reaction_type text NOT NULL DEFAULT 'LIKE',
+        reacted_at timestamptz DEFAULT now()
+      );
+    `);
+    logger.info("Database tables verified/created");
+  } catch (err) {
+    logger.error({ err }, "Failed to ensure tables exist");
+  } finally {
+    client.release();
   }
+}
 
-  logger.info({ port }, "Server listening");
+ensureTablesExist().then(() => {
+  app.listen(port, (err) => {
+    if (err) {
+      logger.error({ err }, "Error listening on port");
+      process.exit(1);
+    }
+
+    logger.info({ port }, "Server listening");
+  });
+}).catch((err) => {
+  logger.error({ err }, "Startup failed");
+  process.exit(1);
 });

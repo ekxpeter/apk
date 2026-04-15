@@ -2590,47 +2590,160 @@ function extractPostId(url: string): string | null {
   return null;
 }
 
+// Numeric feedback_reaction_id values for CometUFIFeedbackReactMutation
+const FEEDBACK_REACTION_IDS: Record<string, number> = {
+  LIKE: 1635855486666999,
+  LOVE: 1678524932434102,
+  HAHA: 115940658764963,
+  WOW: 478547315650144,
+  SAD: 908563459236466,
+  ANGRY: 444813342392137,
+  SUPPORT: 613557422527858,
+};
+
+// Known CometUFIFeedbackReactMutation doc_ids — primary first (discovered via bootloader endpoint)
+const KNOWN_REACTION_DOC_IDS = [
+  "26477330531933156", // CometUFIFeedbackReactMutation_facebookRelayOperation (current)
+  "7002301193146596",
+  "6512638255483773",
+  "5765413673543383",
+  "6213559735413102",
+  "2786814014768199",
+  "4575909182458892",
+  "7149393385111985",
+  "6618715854877030",
+];
+
+// Fetch the latest CometUFIFeedbackReactMutation doc_id via the bootloader endpoint
+async function fetchReactDocIdFromBootloader(cookie: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      "https://www.facebook.com/ajax/bootloader-endpoint/?__a=1&modules=CometUFIFeedbackReactMutation",
+      {
+        headers: {
+          "user-agent": DESKTOP_UA,
+          "accept": "*/*",
+          "accept-encoding": "identity",
+          "cookie": cookie,
+          "referer": "https://www.facebook.com/",
+        },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    const text = await res.text();
+    // Extract bundle URLs from bootloader response
+    const bundleUrls = [...new Set([
+      ...[...text.matchAll(/https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^\s"]+\.js[^\s"]*/g)].map(m => m[0].replace(/"/g, "")),
+    ])];
+    logger.info({ bundleCount: bundleUrls.length }, "bootloader bundle URLs for react mutation");
+
+    // Fetch bundles in parallel and search for the doc_id
+    const results = await Promise.allSettled(
+      bundleUrls.slice(0, 25).map(async (url) => {
+        try {
+          const r = await fetch(url, {
+            headers: { "user-agent": DESKTOP_UA, "accept-encoding": "identity", "referer": "https://www.facebook.com/" },
+            signal: AbortSignal.timeout(12000),
+          });
+          const js = await r.text();
+          const m =
+            js.match(/CometUFIFeedbackReactMutation_facebookRelayOperation[^;]*a\.exports="(\d{14,20})"/) ||
+            js.match(/CometUFIFeedbackReactMutation_facebookRelayOperation[^\]]*\],\(function\([^)]+\)\{[a-z]\.exports="(\d{14,20})"\}/) ||
+            js.match(/CometUFIFeedbackReact[A-Za-z]*Mutation_facebookRelayOperation[^;]{0,200}a\.exports="(\d{14,20})"/);
+          return m?.[1] ?? null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) {
+        logger.info({ docId: r.value }, "Found CometUFIFeedbackReactMutation doc_id via bootloader");
+        return r.value;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "fetchReactDocIdFromBootloader error");
+  }
+  return null;
+}
+
 // ── React to a post using a single session ────────────────────────────────────
-// Fetch fresh lsd + dtsg + doc_id for CometUFIReactionMutation from the post page
+// Fetch fresh lsd + dtsg from the post page
 async function fetchReactTokensFromPage(
   postUrl: string,
   cookie: string
-): Promise<{ lsd: string | null; dtsg: string | null; reactionDocId: string | null }> {
+): Promise<{ lsd: string | null; dtsg: string | null; html: string }> {
   try {
     const res = await fetch(postUrl, {
       headers: {
-        ...BROWSER_HEADERS,
-        "cookie": cookie,
+        "user-agent": DESKTOP_UA,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
         "accept-encoding": "identity",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "upgrade-insecure-requests": "1",
+        "cookie": cookie,
       },
+      redirect: "follow",
     });
     const html = await res.text();
 
     const lsdMatch =
       html.match(/"LSD",\[\],\{"token":"([^"]+)"\}/) ||
-      html.match(/"LSD"[^}]*?"token":"([^"]+)"/) ||
+      html.match(/"LSD"[^,\]]*"token":"([^"]+)"/) ||
+      html.match(/\["LSD"\s*,\s*\[\s*\]\s*,\s*\{\s*"token"\s*:\s*"([^"]+)"/) ||
       html.match(/name="lsd"\s+value="([^"]+)"/) ||
-      html.match(/"lsd":"([^"]+)"/);
+      html.match(/"lsd"\s*:\s*"([^"]{4,20})"/) ||
+      html.match(/&lsd=([A-Za-z0-9_-]{4,20})&/);
 
     const dtsgMatch =
       html.match(/"DTSGInitialData"[^}]*?"token":"([^"]+)"/) ||
+      html.match(/"DTSGInitData"[^}]*?"token":"([^"]+)"/) ||
       html.match(/name="fb_dtsg"\s+value="([^"]+)"/) ||
-      html.match(/"fb_dtsg":"([^"]+)"/);
+      html.match(/"fb_dtsg"\s*:\s*"([^"]+)"/) ||
+      html.match(/"token":"([A-Za-z0-9_-]{20,})"[^}]*?"hasExpiredToken"/);
 
-    // Scrape live doc_id for CometUFIReactionMutation
-    const docIdMatch =
-      html.match(/"CometUFIReactionMutation"[^}]*?"id":"(\d{14,20})"/) ||
-      html.match(/"id":"(\d{14,20})"[^}]*?"name":"CometUFIReactionMutation"/) ||
-      html.match(/CometUFIReactionMutation.*?"(\d{14,20})"/) ||
-      html.match(/"UFIReactionMutation[^"]*"[^}]*?"id":"(\d{14,20})"/);
+    logger.info({
+      lsd: lsdMatch?.[1]?.substring(0, 8) ?? null,
+      dtsg: dtsgMatch?.[1]?.substring(0, 8) ?? null,
+      htmlLen: html.length,
+      status: res.status,
+    }, "fetchReactTokensFromPage result");
 
     return {
       lsd: lsdMatch?.[1] ?? null,
       dtsg: dtsgMatch?.[1] ?? null,
-      reactionDocId: docIdMatch?.[1] ?? null,
+      html,
     };
+  } catch (err) {
+    logger.error({ err }, "fetchReactTokensFromPage error");
+    return { lsd: null, dtsg: null, html: "" };
+  }
+}
+
+// Verify whether a reaction was actually applied by checking mbasic
+async function verifyReactionApplied(postId: string, cookie: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `https://mbasic.facebook.com/${postId}`,
+      {
+        headers: {
+          "user-agent": MOBILE_UA,
+          "cookie": cookie,
+          "accept": "text/html,*/*;q=0.9",
+        },
+        redirect: "follow",
+      }
+    );
+    const html = await res.text();
+    // "unlike" or "remove reaction" means we already reacted
+    return html.toLowerCase().includes("unlike") || html.toLowerCase().includes("remove reaction");
   } catch {
-    return { lsd: null, dtsg: null, reactionDocId: null };
+    return false;
   }
 }
 
@@ -2641,227 +2754,244 @@ async function reactWithSession(
 ): Promise<{ ok: boolean; errorMsg?: string }> {
   if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
 
-  // Numeric like_type codes for /reactions/react/
-  const likeTypeMap: Record<string, string> = {
-    LIKE: "1",
-    LOVE: "2",
-    HAHA: "4",
-    WOW: "3",
-    SAD: "7",
-    ANGRY: "8",
-  };
-  const likeType = likeTypeMap[reactionType] ?? "1";
-
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
 
-  // Always fetch fresh tokens from the actual post page
-  const { lsd: freshLsd, dtsg: freshDtsg, reactionDocId } = await fetchReactTokensFromPage(postUrl, session.cookie);
+  // Fetch tokens from page + bootloader doc_id concurrently
+  const [pageTokens, bootloaderDocId] = await Promise.all([
+    fetchReactTokensFromPage(postUrl, session.cookie),
+    fetchReactDocIdFromBootloader(session.cookie),
+  ]);
 
+  const { lsd: freshLsd, dtsg: freshDtsg, html: pageHtml } = pageTokens;
   const lsd = freshLsd || session.lsd || "";
   const dtsg = freshDtsg || session.dtsg || "";
 
-  logger.info({ postId, reactionType, lsd: lsd.substring(0, 8), dtsg: dtsg.substring(0, 8), reactionDocId }, "react tokens fetched");
+  logger.info({ postId, reactionType, lsd: lsd.substring(0, 8), dtsg: dtsg.substring(0, 8), bootloaderDocId }, "react tokens fetched");
 
-  // ── Method 1: /reactions/react/ (internal AJAX endpoint) ──────────────────
+  // Check if we're already reacted (page shows "Unlike")
+  if (pageHtml.toLowerCase().includes("unlike") || pageHtml.toLowerCase().includes("remove reaction")) {
+    logger.info({ postId }, "react: already reacted per page HTML");
+    return { ok: true };
+  }
+
+  // ── Method 1: GraphQL CometUFIFeedbackReactMutation (correct current mutation) ─
   if (lsd && dtsg) {
     try {
-      const body = new URLSearchParams({
-        __user: session.userId,
-        __a: "1",
-        __req: Math.random().toString(36).substring(2, 6),
-        __hs: "19624.HYP:comet_pkg.2.1..0.0",
-        dpr: "1",
-        __ccg: "EXCELLENT",
-        __rev: "1015267764",
-        __s: randomBytes(3).toString("hex"),
-        __hsi: Date.now().toString(),
-        __dyn: "7xe6E5q0BovXDxyUbWl2uV-xqEhwGm9oqBgao888EuC9oqCwjE98Kux60dBCzEnxifEoxm3eKiXDADwCwjE2Kqeh1wo",
-        __csr: "",
-        lsd,
-        fb_dtsg: dtsg,
-        jazoest: (
-          Array.from(Buffer.from(dtsg))
-            .reduce((a, c) => a + c, 0) + 2
-        ).toString(),
-        ft_ent_identifier: postId,
-        action: "ADD_REACTION",
-        like_type: likeType,
-        source: "22",
-        ft_ent_type: "1",
-        attribution_id_v2: "",
-        tracking: "[]",
-      });
+      const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
+      const feedbackReactionId = FEEDBACK_REACTION_IDS[reactionType] ?? FEEDBACK_REACTION_IDS.LIKE;
 
-      const res = await fetch("https://www.facebook.com/reactions/react/", {
-        method: "POST",
-        headers: {
-          ...BROWSER_HEADERS,
-          "cookie": session.cookie,
-          "content-type": "application/x-www-form-urlencoded",
-          "x-requested-with": "XMLHttpRequest",
-          "x-fb-lsd": lsd,
-          "referer": postUrl,
-          "origin": "https://www.facebook.com",
-        },
-        body: body.toString(),
-      });
+      // Prioritize bootloader-discovered doc_id, then our known list
+      const docIdsToTry = bootloaderDocId
+        ? [bootloaderDocId, ...KNOWN_REACTION_DOC_IDS.filter(d => d !== bootloaderDocId)]
+        : KNOWN_REACTION_DOC_IDS;
 
-      const text = await res.text();
-      logger.info({ postId, reactionType, status: res.status, body: text.substring(0, 300) }, "react /reactions/react/ response");
-
-      if (res.status >= 200 && res.status < 400) {
-        const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+      for (const docId of docIdsToTry) {
         try {
-          const json = JSON.parse(clean);
-          // Success: payload present, no error key at top level
-          if (json?.payload !== undefined && !json?.error) return { ok: true };
-          if (json?.error) {
-            logger.warn({ error: json.error }, "react method 1 json error");
-          } else {
-            // No error field at all — treat as success
-            if (!text.includes('"errorSummary"') && !text.includes('"checkpoint"')) return { ok: true };
+          const variables = JSON.stringify({
+            input: {
+              feedback_id: feedbackId,
+              feedback_reaction_id: feedbackReactionId,
+              feedback_source: 107,
+              is_tracking_encrypted: true,
+              tracking: [],
+              actor_id: session.userId,
+              client_mutation_id: randomBytes(4).toString("hex"),
+            },
+            feedbackSource: 107,
+            scale: 1,
+            useDefaultActor: false,
+            reactorActorID: session.userId,
+          });
+
+          const bodyParams: Record<string, string> = {
+            av: session.userId,
+            __user: session.userId,
+            __a: "1",
+            __req: Math.random().toString(36).substring(2, 6),
+            fb_dtsg: dtsg,
+            lsd,
+            doc_id: docId,
+            variables,
+            fb_api_caller_class: "RelayModern",
+            fb_api_req_friendly_name: "CometUFIFeedbackReactMutation",
+            server_timestamps: "true",
+          };
+
+          const body = new URLSearchParams(bodyParams);
+
+          const res = await fetch("https://www.facebook.com/api/graphql/", {
+            method: "POST",
+            headers: {
+              "user-agent": DESKTOP_UA,
+              "accept": "*/*",
+              "accept-language": "en-US,en;q=0.9",
+              "accept-encoding": "identity",
+              "content-type": "application/x-www-form-urlencoded",
+              "x-fb-friendly-name": "CometUFIFeedbackReactMutation",
+              "x-fb-lsd": lsd,
+              "sec-fetch-dest": "empty",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-site": "same-origin",
+              "cookie": session.cookie,
+              "referer": postUrl,
+              "origin": "https://www.facebook.com",
+            },
+            body: body.toString(),
+          });
+
+          const text = await res.text();
+          logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "react GraphQL CometUFIFeedbackReactMutation response");
+
+          if (res.status === 200) {
+            const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+            try {
+              const json = JSON.parse(clean);
+              // Success: data present and no errors
+              if (json?.data && !json?.errors && !json?.error) {
+                logger.info({ postId, docId }, "react method 1 success (graphql data)");
+                return { ok: true };
+              }
+              if (json?.data?.story_act_on_feedback || json?.data?.feedback_react || json?.data?.reactWithFeedback) {
+                logger.info({ postId, docId }, "react method 1 success (mutation data)");
+                return { ok: true };
+              }
+              // Error 1357004 = valid doc_id but auth/param issue — stop loop
+              if (json?.error === 1357004) {
+                logger.warn({ docId, error: json.error }, "react method 1 auth/param error, stopping doc_id loop");
+                break;
+              }
+              // Unknown doc_id (1675002) — try next
+              if (json?.error === 1675002) {
+                logger.warn({ docId }, "react method 1 unknown doc_id, trying next");
+                continue;
+              }
+              logger.warn({ docId, error: json?.error, data: JSON.stringify(json).substring(0, 200) }, "react method 1 non-success");
+            } catch {
+              if (text.includes('"data"') && !text.includes('"errors"') && !text.includes('"error"')) {
+                logger.info({ postId, docId }, "react method 1 success (text check)");
+                return { ok: true };
+              }
+            }
           }
-        } catch {
-          // Not JSON — if it's short and has no error indicators, count as success
-          if (!text.includes("error") && !text.includes("checkpoint") && text.length < 5000) return { ok: true };
+        } catch (innerErr) {
+          logger.warn({ docId, err: innerErr }, "react method 1 inner error");
         }
       }
     } catch (err) {
-      logger.error({ err }, "react method 1 error");
+      logger.error({ err }, "react graphql method 1 error");
     }
   }
 
-  // ── Method 2: GraphQL CometUFIReactionMutation with live-scraped doc_id ────
-  if (reactionDocId && lsd && dtsg) {
-    try {
-      const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
-      const variables = JSON.stringify({
-        input: {
-          action: `ADD_${reactionType}`,
-          feedback_id: feedbackId,
-          feedback_source: "TIMELINE",
-          is_tracking_encrypted: true,
-          tracking: [],
-          actor_id: session.userId,
-          client_mutation_id: Math.random().toString(36).substring(2),
-          reaction_type: reactionType,
-        },
-        feedbackSource: 1,
-        scale: 1,
-        useDefaultActor: false,
-        reactorActorID: session.userId,
-      });
-
-      const body = new URLSearchParams({
-        av: session.userId,
-        __user: session.userId,
-        __a: "1",
-        __req: Math.random().toString(36).substring(2, 6),
-        fb_dtsg: dtsg,
-        lsd,
-        doc_id: reactionDocId,
-        variables,
-        fb_api_caller_class: "RelayModern",
-        fb_api_req_friendly_name: "CometUFIReactionMutation",
-        server_timestamps: "true",
-      });
-
-      const res = await fetch("https://www.facebook.com/api/graphql/", {
-        method: "POST",
-        headers: {
-          ...BROWSER_HEADERS,
-          "content-type": "application/x-www-form-urlencoded",
-          "cookie": session.cookie,
-          "x-fb-friendly-name": "CometUFIReactionMutation",
-          "x-fb-lsd": lsd,
-          "referer": postUrl,
-          "origin": "https://www.facebook.com",
-        },
-        body: body.toString(),
-      });
-
-      const text = await res.text();
-      logger.info({ reactionDocId, status: res.status, body: text.substring(0, 300) }, "react GraphQL live doc_id response");
-
-      if (res.status === 200 && !text.includes('"errors"') && text.includes('"data"')) {
-        return { ok: true };
-      }
-      if (res.status === 200 && text.includes('"feedback"')) {
-        return { ok: true };
-      }
-    } catch (err) {
-      logger.error({ err }, "react graphql method 2 error");
-    }
-  }
-
-  // ── Method 3: mbasic reaction via like.php with success verification ────────
+  // ── Method 3: mbasic reaction via like.php (LIKE only on mbasic) ──────────
   try {
-    // Step 1: GET the like page (it gives us a confirmation form to POST)
+    const mbasicUA = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
     const likePageUrl = `https://mbasic.facebook.com/a/like.php?ft_ent_identifier=${postId}&refsrc=deprecated&refid=10`;
+
     const getRes = await fetch(likePageUrl, {
       method: "GET",
       headers: {
-        "user-agent": MOBILE_UA,
+        "user-agent": mbasicUA,
         "cookie": session.cookie,
         "accept": "text/html,*/*;q=0.9",
+        "accept-language": "en-US,en;q=0.9",
       },
       redirect: "follow",
     });
     const getHtml = await getRes.text();
+    logger.info({ postId, htmlLen: getHtml.length, hasUnlike: getHtml.toLowerCase().includes("unlike") }, "react mbasic GET like page");
 
-    // If we already see "Unlike" — reaction already applied
+    // Already reacted
     if (getHtml.toLowerCase().includes("unlike")) {
       logger.info({ postId }, "react mbasic: already liked");
       return { ok: true };
     }
 
-    // Extract the confirmation form action URL
-    const formActionMatch = getHtml.match(/action="([^"]+like\.php[^"]+)"/);
-    if (formActionMatch) {
-      const confirmUrl = "https://mbasic.facebook.com" + formActionMatch[1].replace(/&amp;/g, "&");
-      const postBody = new URLSearchParams();
+    // Extract confirmation form
+    const formActionMatch =
+      getHtml.match(/action="([^"]*like\.php[^"]*)"/) ||
+      getHtml.match(/action="([^"]+)"[^>]*method="post"/i);
 
-      // Extract hidden form fields
-      const inputMatches = getHtml.matchAll(/name="([^"]+)"\s+value="([^"]*)"/g);
+    if (formActionMatch) {
+      let confirmUrl = formActionMatch[1].replace(/&amp;/g, "&");
+      if (!confirmUrl.startsWith("http")) {
+        confirmUrl = "https://mbasic.facebook.com" + confirmUrl;
+      }
+      const postBody = new URLSearchParams();
+      const inputMatches = getHtml.matchAll(/<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"/g);
       for (const m of inputMatches) {
         postBody.set(m[1], m[2]);
+      }
+      // Also match value before name
+      const inputMatches2 = getHtml.matchAll(/<input[^>]+value="([^"]*)"[^>]+name="([^"]+)"/g);
+      for (const m of inputMatches2) {
+        if (!postBody.has(m[2])) postBody.set(m[2], m[1]);
       }
 
       const postRes = await fetch(confirmUrl, {
         method: "POST",
         headers: {
-          "user-agent": MOBILE_UA,
+          "user-agent": mbasicUA,
           "cookie": session.cookie,
           "content-type": "application/x-www-form-urlencoded",
           "referer": likePageUrl,
+          "accept": "text/html,*/*;q=0.9",
         },
         body: postBody.toString(),
         redirect: "follow",
       });
       const postHtml = await postRes.text();
-      logger.info({ status: postRes.status, htmlLen: postHtml.length, hasUnlike: postHtml.toLowerCase().includes("unlike") }, "react mbasic POST response");
+      const confirmed = postHtml.toLowerCase().includes("unlike") || postHtml.toLowerCase().includes("remove reaction");
+      logger.info({ status: postRes.status, htmlLen: postHtml.length, confirmed }, "react mbasic POST response");
 
-      if (postHtml.toLowerCase().includes("unlike") || postRes.status < 400) {
+      // ONLY return ok if we actually see "unlike" confirming the reaction was applied
+      if (confirmed) {
         return { ok: true };
       }
-    } else {
-      // Fallback: direct GET to legacy like endpoint
-      const legacyRes = await fetch(
-        `https://mbasic.facebook.com/${postId}?like_reaction_type=${likeType}&likes_source=explicit`,
-        {
-          headers: { "user-agent": MOBILE_UA, "cookie": session.cookie },
-          redirect: "follow",
-        }
-      );
-      const legacyHtml = await legacyRes.text();
-      if (legacyHtml.toLowerCase().includes("unlike")) return { ok: true };
+    }
+
+    // Fallback: try mbasic post page direct URL for reaction
+    const mbasicPostRes = await fetch(
+      `https://mbasic.facebook.com/${postId}`,
+      {
+        headers: { "user-agent": mbasicUA, "cookie": session.cookie, "accept": "text/html,*/*;q=0.9" },
+        redirect: "follow",
+      }
+    );
+    const mbasicPostHtml = await mbasicPostRes.text();
+    // Check if already reacted
+    if (mbasicPostHtml.toLowerCase().includes("unlike") || mbasicPostHtml.toLowerCase().includes("remove reaction")) {
+      return { ok: true };
+    }
+
+    // Try the direct like URL in mbasic (GET-based like, works for some posts)
+    const directLikeRes = await fetch(
+      `https://mbasic.facebook.com/a/like.php?ft_ent_identifier=${postId}&refsrc=deprecated`,
+      {
+        headers: { "user-agent": mbasicUA, "cookie": session.cookie, "accept": "text/html,*/*;q=0.9" },
+        redirect: "follow",
+      }
+    );
+    const directLikeHtml = await directLikeRes.text();
+    if (directLikeHtml.toLowerCase().includes("unlike")) {
+      return { ok: true };
     }
   } catch (err) {
     logger.error({ err }, "react mbasic method 3 error");
   }
 
-  return { ok: false, errorMsg: "All reaction methods failed" };
+  // ── Final verification: check mbasic post page for reaction status ─────────
+  try {
+    const verified = await verifyReactionApplied(postId, session.cookie);
+    if (verified) {
+      logger.info({ postId }, "react verified via mbasic post page check");
+      return { ok: true };
+    }
+  } catch (err) {
+    logger.error({ err }, "react verify error");
+  }
+
+  return { ok: false, errorMsg: "All reaction methods failed — cookie may be expired or post is restricted" };
 }
 
 // ── /fb/react ─────────────────────────────────────────────────────────────────
