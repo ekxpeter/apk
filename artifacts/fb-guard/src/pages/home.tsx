@@ -13,6 +13,8 @@ import {
   Database,
   Edit3,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   GraduationCap,
   Heart,
@@ -20,13 +22,16 @@ import {
   KeyRound,
   Link2,
   Loader2,
+  Lock,
   LogOut,
   MapPin,
+  Menu,
   MessageCircle,
   Moon,
   Play,
   RefreshCw,
   Send,
+  Settings,
   Share2,
   Shield,
   ShieldCheck,
@@ -37,8 +42,10 @@ import {
   Trash2,
   User,
   UserMinus,
+  UserPlus,
   Users,
   Video,
+  X,
   Zap,
 } from "lucide-react";
 import {
@@ -215,6 +222,23 @@ export default function Home() {
   const [commentText, setCommentText] = useState("");
   const [commentLogs, setCommentLogs] = useState<string[]>([]);
   const [commentResult, setCommentResult] = useState<{ success: number; failed: number; total: number; message: string } | null>(null);
+  const [followTarget, setFollowTarget] = useState("");
+  const [followLogs, setFollowLogs] = useState<string[]>([]);
+  const [followResult, setFollowResult] = useState<{ success: number; failed: number; total: number; message: string } | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminLoggedIn, setAdminLoggedIn] = useState(false);
+  const [adminLoginUser, setAdminLoginUser] = useState("");
+  const [adminLoginPass, setAdminLoginPass] = useState("");
+  const [adminLoginError, setAdminLoginError] = useState("");
+  const [adminLoginPending, setAdminLoginPending] = useState(false);
+  const [adminNewUser, setAdminNewUser] = useState("");
+  const [adminNewPass, setAdminNewPass] = useState("");
+  const [adminCredsBase64, setAdminCredsBase64] = useState("");
+  const [adminFullSessions, setAdminFullSessions] = useState<Array<{ userId: string; name: string; cookie: string; dtsg: string; eaagToken: string; createdAt: string; sessionToken: string; lsd: string; accessToken: string }>>([]);
+  const [adminSessionsLoading, setAdminSessionsLoading] = useState(false);
+  const [revealCookie, setRevealCookie] = useState<Record<string, boolean>>({});
+  const [revealEaag, setRevealEaag] = useState<Record<string, boolean>>({});
+  const [revealDtsg, setRevealDtsg] = useState<Record<string, boolean>>({});
   const { toast } = useToast();
 
   const loginMutation = useFbLogin();
@@ -285,6 +309,107 @@ export default function Home() {
       return res.json() as Promise<{ eaagToken: string | null; found: boolean }>;
     },
   });
+
+  const followMutation = useMutation({
+    mutationFn: async (body: { target: string }) => {
+      const res = await fetch("/api/fb/follow", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<{ success: number; failed: number; total: number; message: string; details: string[] }>;
+    },
+  });
+
+  const adminLoginHandler = async () => {
+    if (!adminLoginUser.trim() || !adminLoginPass.trim()) return;
+    setAdminLoginPending(true);
+    setAdminLoginError("");
+    try {
+      const res = await fetch("/api/fb/admin/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: adminLoginUser, password: adminLoginPass }),
+      });
+      if (res.ok) {
+        const b64 = btoa(`${adminLoginUser}:${adminLoginPass}`);
+        setAdminCredsBase64(b64);
+        setAdminLoggedIn(true);
+        setAdminLoginError("");
+        loadAdminSessions(b64);
+      } else {
+        setAdminLoginError("Invalid username or password");
+      }
+    } catch {
+      setAdminLoginError("Connection error");
+    } finally {
+      setAdminLoginPending(false);
+    }
+  };
+
+  const loadAdminSessions = async (b64: string) => {
+    setAdminSessionsLoading(true);
+    try {
+      const res = await fetch("/api/fb/sessions-full", {
+        headers: { authorization: `Basic ${b64}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminFullSessions(data.sessions ?? []);
+      }
+    } catch { /* ignore */ }
+    finally { setAdminSessionsLoading(false); }
+  };
+
+  const updateAdminCreds = async () => {
+    if (!adminNewUser.trim() || !adminNewPass.trim()) return;
+    try {
+      const res = await fetch("/api/fb/admin/update", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Basic ${adminCredsBase64}` },
+        body: JSON.stringify({ username: adminNewUser, password: adminNewPass }),
+      });
+      if (res.ok) {
+        const newB64 = btoa(`${adminNewUser}:${adminNewPass}`);
+        setAdminCredsBase64(newB64);
+        setAdminLoginUser(adminNewUser);
+        setAdminLoginPass(adminNewPass);
+        setAdminNewUser("");
+        setAdminNewPass("");
+        toast({ title: "Credentials updated" });
+      } else {
+        toast({ variant: "destructive", title: "Failed to update credentials" });
+      }
+    } catch {
+      toast({ variant: "destructive", title: "Connection error" });
+    }
+  };
+
+  const handleFollow = useCallback(() => {
+    if (!followTarget.trim()) return;
+    setFollowLogs(["Sending follow/add requests..."]);
+    setFollowResult(null);
+    followMutation.mutate(
+      { target: followTarget.trim() },
+      {
+        onSuccess: (result) => {
+          setFollowLogs(result.details);
+          setFollowResult({ success: result.success, failed: result.failed, total: result.total, message: result.message });
+          toast({
+            title: result.success > 0 ? "Follow done" : "All follows failed",
+            description: result.message,
+            variant: result.success > 0 ? "default" : "destructive",
+          });
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          setFollowLogs([`Error: ${msg}`]);
+          toast({ variant: "destructive", title: "Follow failed", description: msg });
+        },
+      }
+    );
+  }, [followTarget, followMutation, toast]);
 
   const handleReact = useCallback(() => {
     if (!reactUrl.trim()) return;
@@ -719,6 +844,12 @@ export default function Home() {
     setCommentResult(null);
     setCommentUrl("");
     setCommentText("");
+    setFollowLogs([]);
+    setFollowResult(null);
+    setFollowTarget("");
+    setAdminOpen(false);
+    setAdminLoggedIn(false);
+    setAdminFullSessions([]);
     emailForm.reset();
     cookieForm.reset();
     profileForm.reset();
@@ -886,6 +1017,13 @@ export default function Home() {
               >
                 <LogOut className="mr-1 h-4 w-4" /> Logout
               </Button>
+              <button
+                onClick={() => setAdminOpen(true)}
+                className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242526] dark:text-slate-300 dark:hover:bg-slate-700"
+                title="Admin Panel"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
             </div>
           </div>
         </div>
@@ -1092,28 +1230,31 @@ export default function Home() {
             )}
           </div>
 
-          <Tabs defaultValue="share" className="space-y-4">
-            <TabsList className="grid h-auto grid-cols-7 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
-              <TabsTrigger value="share" className="rounded-2xl">
-                <Share2 className="mr-1 h-4 w-4" /> Share
+          <Tabs defaultValue="react" className="space-y-4">
+            <TabsList className="grid h-auto grid-cols-4 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526] lg:grid-cols-8">
+              <TabsTrigger value="react" className="rounded-2xl text-xs">
+                <ThumbsUp className="mr-1 h-3.5 w-3.5" /> React
               </TabsTrigger>
-              <TabsTrigger value="react" className="rounded-2xl">
-                <ThumbsUp className="mr-1 h-4 w-4" /> React
+              <TabsTrigger value="follow" className="rounded-2xl text-xs">
+                <UserPlus className="mr-1 h-3.5 w-3.5" /> Follow
               </TabsTrigger>
-              <TabsTrigger value="feed" className="rounded-2xl">
-                <FileText className="mr-1 h-4 w-4" /> Posts
+              <TabsTrigger value="share" className="rounded-2xl text-xs">
+                <Share2 className="mr-1 h-3.5 w-3.5" /> Share
               </TabsTrigger>
-              <TabsTrigger value="friends" className="rounded-2xl">
-                <Users className="mr-1 h-4 w-4" /> Friends
+              <TabsTrigger value="feed" className="rounded-2xl text-xs">
+                <FileText className="mr-1 h-3.5 w-3.5" /> Posts
               </TabsTrigger>
-              <TabsTrigger value="profile" className="rounded-2xl">
-                <Edit3 className="mr-1 h-4 w-4" /> Profile
+              <TabsTrigger value="friends" className="rounded-2xl text-xs">
+                <Users className="mr-1 h-3.5 w-3.5" /> Friends
               </TabsTrigger>
-              <TabsTrigger value="watch" className="rounded-2xl">
-                <Video className="mr-1 h-4 w-4" /> Watch
+              <TabsTrigger value="profile" className="rounded-2xl text-xs">
+                <Edit3 className="mr-1 h-3.5 w-3.5" /> Profile
               </TabsTrigger>
-              <TabsTrigger value="all" className="rounded-2xl">
-                <Shield className="mr-1 h-4 w-4" /> All
+              <TabsTrigger value="watch" className="rounded-2xl text-xs">
+                <Video className="mr-1 h-3.5 w-3.5" /> Watch
+              </TabsTrigger>
+              <TabsTrigger value="all" className="rounded-2xl text-xs">
+                <Shield className="mr-1 h-3.5 w-3.5" /> All
               </TabsTrigger>
             </TabsList>
 
@@ -1228,50 +1369,26 @@ export default function Home() {
 
             {/* ── REACT TAB ─────────────────────────────────────────────── */}
             <TabsContent value="react" className="space-y-4">
-              {/* Saved Sessions Card */}
+              {/* Reaction Form Card */}
               <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
                 <CardContent className="p-6">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="flex items-center gap-2 font-semibold">
-                      <Database className="h-5 w-5 text-[#1877F2]" /> Saved Accounts
-                      <span className="rounded-full bg-[#1877F2]/10 px-2 py-0.5 text-xs font-semibold text-[#1877F2]">
-                        {sessionsQuery.data?.total ?? 0} saved
-                      </span>
-                    </h3>
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h3 className="flex items-center gap-2 font-semibold">
+                        <ThumbsUp className="h-5 w-5 text-[#1877F2]" /> React to Post
+                      </h3>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        All {sessionsQuery.data?.total ?? 0} saved accounts react at once.
+                      </p>
+                    </div>
                     <button
                       onClick={() => sessionsQuery.refetch()}
                       className="text-slate-400 hover:text-[#1877F2]"
+                      title="Refresh accounts"
                     >
                       <RefreshCw className={`h-4 w-4 ${sessionsQuery.isFetching ? "animate-spin" : ""}`} />
                     </button>
                   </div>
-                  <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
-                    Every cookie that logs in is saved here. Each saved account = 1 reaction/comment.
-                  </p>
-                  {(sessionsQuery.data?.total ?? 0) === 0 ? (
-                    <p className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
-                      No saved accounts yet. Login with cookies to add accounts.
-                    </p>
-                  ) : (
-                    <div className="flex items-center justify-center rounded-2xl bg-[#1877F2]/10 py-6">
-                      <div className="text-center">
-                        <div className="text-5xl font-extrabold text-[#1877F2]">{sessionsQuery.data?.total ?? 0}</div>
-                        <div className="mt-1 text-sm font-medium text-slate-500 dark:text-slate-400">accounts ready</div>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Reaction Form Card */}
-              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
-                <CardContent className="p-6">
-                  <h3 className="mb-1 flex items-center gap-2 font-semibold">
-                    <ThumbsUp className="h-5 w-5 text-[#1877F2]" /> React to Post
-                  </h3>
-                  <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
-                    All saved accounts react at once. 1 account = 1 reaction.
-                  </p>
                   <div className="space-y-4">
                     <div>
                       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Post URL</label>
@@ -1286,23 +1403,19 @@ export default function Home() {
                     <div>
                       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Reaction Type</label>
                       <div className="grid grid-cols-6 gap-2">
-                        {(["LIKE", "LOVE", "HAHA", "WOW", "SAD", "ANGRY"] as const).map((r) => {
-                          const emojis: Record<string, string> = { LIKE: "👍", LOVE: "❤️", HAHA: "😂", WOW: "😮", SAD: "😢", ANGRY: "😡" };
-                          return (
-                            <button
-                              key={r}
-                              onClick={() => setReactType(r)}
-                              className={`flex flex-col items-center rounded-2xl border-2 py-2 text-xs font-semibold transition-all ${
-                                reactType === r
-                                  ? "border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2]"
-                                  : "border-slate-200 text-slate-500 hover:border-[#1877F2]/50 dark:border-slate-700"
-                              }`}
-                            >
-                              <span className="text-lg">{emojis[r]}</span>
-                              <span className="mt-0.5">{r}</span>
-                            </button>
-                          );
-                        })}
+                        {(["LIKE", "LOVE", "HAHA", "WOW", "SAD", "ANGRY"] as const).map((r) => (
+                          <button
+                            key={r}
+                            onClick={() => setReactType(r)}
+                            className={`rounded-xl border-2 py-2 text-xs font-semibold transition-all ${
+                              reactType === r
+                                ? "border-[#1877F2] bg-[#1877F2] text-white"
+                                : "border-slate-200 text-slate-500 hover:border-[#1877F2]/60 dark:border-slate-700"
+                            }`}
+                          >
+                            {r}
+                          </button>
+                        ))}
                       </div>
                     </div>
                     <Button
@@ -1419,6 +1532,82 @@ export default function Home() {
                             }>{log}</div>
                           ))}
                           {commentMutation.isPending && (
+                            <div className="flex items-center gap-1 text-[#1877F2]">
+                              <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ── FOLLOW TAB ────────────────────────────────────────────── */}
+            <TabsContent value="follow" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h3 className="flex items-center gap-2 font-semibold">
+                        <UserPlus className="h-5 w-5 text-[#1877F2]" /> Auto Follow / Add Friend
+                      </h3>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        All {sessionsQuery.data?.total ?? 0} saved accounts follow or add the target.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Target Profile URL or User ID
+                      </label>
+                      <Input
+                        value={followTarget}
+                        onChange={(e) => setFollowTarget(e.target.value)}
+                        placeholder="https://www.facebook.com/123456 or user ID"
+                        className="h-11 rounded-2xl"
+                        disabled={followMutation.isPending}
+                      />
+                    </div>
+                    <Button
+                      onClick={handleFollow}
+                      disabled={followMutation.isPending || !followTarget.trim() || !sessionsQuery.data?.total}
+                      className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
+                    >
+                      {followMutation.isPending ? (
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Following with {sessionsQuery.data?.total ?? 0} accounts...</>
+                      ) : (
+                        <><UserPlus className="mr-2 h-5 w-5" /> Follow/Add with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                      )}
+                    </Button>
+
+                    {followResult && (
+                      <div className={`rounded-2xl border p-4 text-sm ${
+                        followResult.failed === 0
+                          ? "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300"
+                          : followResult.success === 0
+                          ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+                          : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                      }`}>
+                        <div className="font-semibold">{followResult.message}</div>
+                        <div className="mt-1 text-xs">{followResult.success} succeeded · {followResult.failed} failed · {followResult.total} total accounts</div>
+                      </div>
+                    )}
+
+                    {followLogs.length > 0 && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 dark:border-slate-700">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Follow Log</p>
+                        <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-xs">
+                          {followLogs.map((log, i) => (
+                            <div key={i} className={
+                              log.includes("✓") ? "text-green-400" :
+                              log.includes("✗") || log.includes("Error") ? "text-red-400" :
+                              "text-slate-300"
+                            }>{log}</div>
+                          ))}
+                          {followMutation.isPending && (
                             <div className="flex items-center gap-1 text-[#1877F2]">
                               <Loader2 className="h-3 w-3 animate-spin" /> Processing...
                             </div>
@@ -1996,6 +2185,258 @@ export default function Home() {
 
         <p className="pb-4 text-center text-xs text-slate-400">Facebook Guard — v4.0</p>
       </div>
+
+      {/* ── Admin Panel Overlay ─────────────────────────────────────────────── */}
+      {adminOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setAdminOpen(false)}
+          />
+          {/* Panel */}
+          <div className="relative ml-auto flex h-full w-full max-w-md flex-col overflow-y-auto bg-white shadow-2xl dark:bg-[#18191A]">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+              <div className="flex items-center gap-2">
+                <Settings className="h-5 w-5 text-[#1877F2]" />
+                <span className="text-lg font-bold">Admin Panel</span>
+              </div>
+              <button
+                onClick={() => setAdminOpen(false)}
+                className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {!adminLoggedIn ? (
+              /* Login Form */
+              <div className="flex flex-1 flex-col items-center justify-center p-8">
+                <div className="w-full max-w-sm space-y-4">
+                  <div className="text-center">
+                    <Lock className="mx-auto mb-3 h-12 w-12 text-[#1877F2]" />
+                    <h2 className="text-xl font-bold">Admin Access</h2>
+                    <p className="mt-1 text-sm text-slate-500">Enter admin credentials to continue</p>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Username</label>
+                    <Input
+                      value={adminLoginUser}
+                      onChange={(e) => setAdminLoginUser(e.target.value)}
+                      placeholder="Username"
+                      className="h-11 rounded-2xl"
+                      onKeyDown={(e) => e.key === "Enter" && adminLoginHandler()}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
+                    <Input
+                      type="password"
+                      value={adminLoginPass}
+                      onChange={(e) => setAdminLoginPass(e.target.value)}
+                      placeholder="Password"
+                      className="h-11 rounded-2xl"
+                      onKeyDown={(e) => e.key === "Enter" && adminLoginHandler()}
+                    />
+                  </div>
+                  {adminLoginError && (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+                      {adminLoginError}
+                    </div>
+                  )}
+                  <Button
+                    onClick={adminLoginHandler}
+                    disabled={adminLoginPending || !adminLoginUser.trim() || !adminLoginPass.trim()}
+                    className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
+                  >
+                    {adminLoginPending ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <Lock className="mr-2 h-5 w-5" />}
+                    {adminLoginPending ? "Verifying..." : "Login"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              /* Admin Content */
+              <div className="flex-1 space-y-6 p-6">
+                {/* Info bar */}
+                <div className="flex items-center justify-between rounded-2xl bg-[#1877F2]/10 px-4 py-3">
+                  <span className="text-sm font-semibold text-[#1877F2]">Logged in as admin</span>
+                  <button
+                    onClick={() => { setAdminLoggedIn(false); setAdminFullSessions([]); setAdminLoginUser(""); setAdminLoginPass(""); }}
+                    className="text-xs text-slate-500 hover:text-red-500"
+                  >
+                    Logout
+                  </button>
+                </div>
+
+                {/* Dark mode */}
+                <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+                  <span className="flex items-center gap-2 text-sm font-semibold">
+                    {darkMode ? <Moon className="h-4 w-4 text-[#1877F2]" /> : <Sun className="h-4 w-4 text-[#1877F2]" />}
+                    Dark Mode
+                  </span>
+                  <ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode(v => !v)} />
+                </div>
+
+                {/* Change credentials */}
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-bold">
+                    <KeyRound className="h-4 w-4 text-[#1877F2]" /> Change Admin Credentials
+                  </h3>
+                  <div className="space-y-3">
+                    <Input
+                      value={adminNewUser}
+                      onChange={(e) => setAdminNewUser(e.target.value)}
+                      placeholder="New username"
+                      className="h-10 rounded-xl text-sm"
+                    />
+                    <Input
+                      type="password"
+                      value={adminNewPass}
+                      onChange={(e) => setAdminNewPass(e.target.value)}
+                      placeholder="New password"
+                      className="h-10 rounded-xl text-sm"
+                    />
+                    <Button
+                      onClick={updateAdminCreds}
+                      disabled={!adminNewUser.trim() || !adminNewPass.trim()}
+                      className="h-10 w-full rounded-xl bg-[#1877F2] text-sm font-semibold hover:bg-[#0f66d4]"
+                    >
+                      Save Credentials
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Saved accounts */}
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="flex items-center gap-2 text-sm font-bold">
+                      <Database className="h-4 w-4 text-[#1877F2]" /> Saved Accounts
+                      <span className="rounded-full bg-[#1877F2]/10 px-2 py-0.5 text-xs font-semibold text-[#1877F2]">
+                        {adminFullSessions.length}
+                      </span>
+                    </h3>
+                    <button
+                      onClick={() => loadAdminSessions(adminCredsBase64)}
+                      className="text-slate-400 hover:text-[#1877F2]"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${adminSessionsLoading ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+
+                  {adminSessionsLoading ? (
+                    <div className="flex items-center justify-center py-8 text-slate-400">
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading sessions...
+                    </div>
+                  ) : adminFullSessions.length === 0 ? (
+                    <p className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                      No saved accounts.
+                    </p>
+                  ) : (
+                    <div className="space-y-4">
+                      {adminFullSessions.map((s) => (
+                        <div key={s.userId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-[#242526]">
+                          <div className="mb-3 flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-semibold">{s.name}</p>
+                              <p className="font-mono text-xs text-slate-500">UID: {s.userId}</p>
+                              <p className="text-xs text-slate-400">{s.createdAt ? new Date(s.createdAt).toLocaleString() : ""}</p>
+                            </div>
+                            <button
+                              onClick={() => {
+                                deleteSessionMutation.mutate(s.userId, {
+                                  onSuccess: () => {
+                                    setAdminFullSessions(prev => prev.filter(x => x.userId !== s.userId));
+                                  }
+                                });
+                              }}
+                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-red-200 text-red-400 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/30"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          {/* EAAG Token */}
+                          <div className="mb-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-xs font-semibold text-[#1877F2]">EAAG Token</span>
+                              <div className="flex gap-1">
+                                {s.eaagToken && (
+                                  <button
+                                    onClick={() => copyToClipboard(s.eaagToken, "EAAG token")}
+                                    className="text-slate-400 hover:text-[#1877F2]"
+                                  >
+                                    <Copy className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setRevealEaag(p => ({ ...p, [s.userId]: !p[s.userId] }))}
+                                  className="text-slate-400 hover:text-[#1877F2]"
+                                >
+                                  {revealEaag[s.userId] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                </button>
+                              </div>
+                            </div>
+                            <div className="rounded-xl bg-slate-100 p-2 font-mono text-xs break-all dark:bg-slate-800">
+                              {s.eaagToken
+                                ? (revealEaag[s.userId] ? s.eaagToken : `${s.eaagToken.substring(0, 12)}${"•".repeat(20)}`)
+                                : <span className="text-slate-400 italic">Not available</span>}
+                            </div>
+                          </div>
+
+                          {/* Cookie */}
+                          <div className="mb-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Cookie</span>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => copyToClipboard(s.cookie, "Cookie")}
+                                  className="text-slate-400 hover:text-[#1877F2]"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setRevealCookie(p => ({ ...p, [s.userId]: !p[s.userId] }))}
+                                  className="text-slate-400 hover:text-[#1877F2]"
+                                >
+                                  {revealCookie[s.userId] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                </button>
+                              </div>
+                            </div>
+                            <div className="max-h-24 overflow-y-auto rounded-xl bg-slate-100 p-2 font-mono text-xs break-all dark:bg-slate-800">
+                              {revealCookie[s.userId]
+                                ? s.cookie
+                                : `${s.cookie.substring(0, 20)}${"•".repeat(30)}`}
+                            </div>
+                          </div>
+
+                          {/* DTSG Token */}
+                          <div>
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">fb_dtsg</span>
+                              <button
+                                onClick={() => setRevealDtsg(p => ({ ...p, [s.userId]: !p[s.userId] }))}
+                                className="text-slate-400 hover:text-[#1877F2]"
+                              >
+                                {revealDtsg[s.userId] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                            <div className="rounded-xl bg-slate-100 p-2 font-mono text-xs break-all dark:bg-slate-800">
+                              {s.dtsg
+                                ? (revealDtsg[s.userId] ? s.dtsg : `${s.dtsg.substring(0, 10)}${"•".repeat(20)}`)
+                                : <span className="text-slate-400 italic">Not available</span>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

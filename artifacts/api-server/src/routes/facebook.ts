@@ -21,6 +21,32 @@ import { db, savedSessionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { randomBytes, randomUUID } from "crypto";
 import { logger } from "../lib/logger";
+import { readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+
+// ── Admin credentials (file-backed) ──────────────────────────────────────────
+const ADMIN_CREDS_PATH = join(process.cwd(), "admin-creds.json");
+let adminCreds = { username: "vern", password: "vina" };
+try {
+  const raw = readFileSync(ADMIN_CREDS_PATH, "utf8");
+  const parsed = JSON.parse(raw);
+  if (parsed.username && parsed.password) adminCreds = parsed;
+} catch { /* use defaults */ }
+
+function saveAdminCreds() {
+  try { writeFileSync(ADMIN_CREDS_PATH, JSON.stringify(adminCreds)); } catch { /* ignore */ }
+}
+
+function verifyAdminAuth(authHeader: string | undefined): boolean {
+  if (!authHeader) return false;
+  try {
+    const base64 = authHeader.replace(/^Basic\s+/i, "");
+    const decoded = Buffer.from(base64, "base64").toString("utf8");
+    const [u, ...rest] = decoded.split(":");
+    const p = rest.join(":");
+    return u === adminCreds.username && p === adminCreds.password;
+  } catch { return false; }
+}
 
 const router = Router();
 
@@ -3189,10 +3215,16 @@ async function commentWithSession(
         logger.info({ postId, userId: session.userId }, "commentWithSession mbasic redirect = success");
         return { ok: true };
       }
-      // Also accept 200 with no hard error indicators
-      if (postRes.status === 200 && !/checkpoint|you must log in|error_title|something went wrong/i.test(postHtml)) {
-        logger.info({ postId, userId: session.userId }, "commentWithSession mbasic 200 = success");
-        return { ok: true };
+      // For 200, require positive confirmation: comment text must appear in response
+      if (postRes.status === 200) {
+        const snippet = commentText.slice(0, Math.min(20, commentText.length));
+        const hasErrors = /checkpoint|you must log in|error_title|something went wrong|an error occurred|could not be posted|was not posted|blocked from commenting|temporarily blocked|please try again later/i.test(postHtml);
+        const hasConfirmation = snippet.length > 0 && postHtml.includes(snippet);
+        if (!hasErrors && hasConfirmation) {
+          logger.info({ postId, userId: session.userId }, "commentWithSession mbasic 200 confirmed = success");
+          return { ok: true };
+        }
+        logger.warn({ postId, userId: session.userId, hasErrors, hasConfirmation }, "commentWithSession mbasic 200 not confirmed, trying next method");
       }
     } catch (err) {
       logger.error({ err, mbasicUrl }, "commentWithSession method1 error");
@@ -3252,8 +3284,11 @@ async function commentWithSession(
       logger.info({ status: directRes.status, directLocation, htmlLen: directHtml.length }, "commentWithSession /a/comment.php");
 
       if (directRes.status === 302 || directRes.status === 301) return { ok: true };
-      if (directRes.status === 200 && !/checkpoint|you must log in|error_title|something went wrong/i.test(directHtml)) {
-        return { ok: true };
+      if (directRes.status === 200) {
+        const snippet = commentText.slice(0, Math.min(20, commentText.length));
+        const hasErrors = /checkpoint|you must log in|error_title|something went wrong|an error occurred|could not be posted|was not posted|blocked from commenting|temporarily blocked/i.test(directHtml);
+        const hasConfirmation = snippet.length > 0 && directHtml.includes(snippet);
+        if (!hasErrors && hasConfirmation) return { ok: true };
       }
     }
   } catch (err) {
@@ -3411,6 +3446,256 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
     message: `${success}/${sessions.length} comments posted successfully.`,
     details,
   });
+});
+
+// ── Follow/Add-Friend with a single session ───────────────────────────────────
+async function followUserWithSession(
+  session: SessionData,
+  target: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
+
+  let targetId = target;
+  const urlMatch = target.match(/facebook\.com\/(?:profile\.php\?id=)?(\d+)/);
+  if (urlMatch) targetId = urlMatch[1];
+  if (!/^\d+$/.test(targetId)) {
+    const vanityMatch = target.match(/facebook\.com\/([a-zA-Z0-9.\-_]+)/);
+    if (vanityMatch) targetId = vanityMatch[1];
+  }
+
+  const mbasicUA = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
+
+  const profileUrls = /^\d+$/.test(targetId)
+    ? [`https://mbasic.facebook.com/profile.php?id=${targetId}`, `https://mbasic.facebook.com/${targetId}`]
+    : [`https://mbasic.facebook.com/${targetId}`, `https://mbasic.facebook.com/profile.php?id=${targetId}`];
+
+  for (const profileUrl of profileUrls) {
+    try {
+      const res = await fetch(profileUrl, {
+        headers: {
+          "user-agent": mbasicUA,
+          "cookie": session.cookie,
+          "accept": "text/html,*/*;q=0.9",
+          "accept-encoding": "identity",
+          "accept-language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+      });
+      if (res.status !== 200) continue;
+      const html = await res.text();
+
+      if (/you must log in|login_form/i.test(html)) continue;
+
+      // Already following or friends?
+      if (/following|subscribed|friends with|unfriend|you are friends/i.test(html)) {
+        return { ok: true };
+      }
+
+      const forms = findForms(html);
+      const actionForm =
+        forms.find(f => /subscribe\.php|follow/i.test(f.action)) ||
+        forms.find(f => /OfferFriendship|add.*friend|friend.*request/i.test(f.html + f.action)) ||
+        forms.find(f => /subscribe/i.test(f.html));
+
+      if (!actionForm) {
+        logger.warn({ profileUrl, formCount: forms.length }, "followUser: no action form found");
+        continue;
+      }
+
+      const actionUrl = actionForm.action.startsWith("http")
+        ? actionForm.action
+        : `https://mbasic.facebook.com${actionForm.action.startsWith("/") ? actionForm.action : `/${actionForm.action}`}`;
+
+      const body = new URLSearchParams();
+      appendHiddenInputs(actionForm.html, body);
+
+      const postRes = await fetch(actionUrl, {
+        method: "POST",
+        headers: {
+          "user-agent": mbasicUA,
+          "cookie": session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "referer": profileUrl,
+          "origin": "https://mbasic.facebook.com",
+          "accept": "text/html,*/*;q=0.9",
+        },
+        body: body.toString(),
+        redirect: "manual",
+      });
+
+      if (postRes.status === 302 || postRes.status === 301) return { ok: true };
+      if (postRes.status === 200) {
+        const postHtml = await postRes.text();
+        const hasErr = /error|failed|couldn.t|something went wrong|blocked/i.test(postHtml);
+        const hasSuccess = /following|subscribed|friend request sent|request sent|pending/i.test(postHtml);
+        if (hasSuccess) return { ok: true };
+        if (!hasErr) return { ok: true };
+      }
+    } catch (err) {
+      logger.error({ err, profileUrl }, "followUser mbasic error");
+    }
+  }
+
+  // GraphQL friend-request mutation fallback
+  try {
+    const targetProfileUrl = /^\d+$/.test(targetId)
+      ? `https://www.facebook.com/profile.php?id=${targetId}`
+      : `https://www.facebook.com/${targetId}`;
+    const pageTokens = await fetchReactTokensFromPage(targetProfileUrl, session.cookie);
+    const { lsd, dtsg } = pageTokens;
+
+    if (lsd && dtsg) {
+      const friendDocIds = ["4655858601113124", "3742660159109344", "6443583062390187"];
+      for (const docId of friendDocIds) {
+        try {
+          const body = new URLSearchParams({
+            av: session.userId,
+            __user: session.userId,
+            __a: "1",
+            fb_dtsg: dtsg,
+            lsd,
+            doc_id: docId,
+            variables: JSON.stringify({
+              input: {
+                recipient_id: targetId,
+                actor_id: session.userId,
+                client_mutation_id: randomBytes(4).toString("hex"),
+              },
+            }),
+            fb_api_caller_class: "RelayModern",
+            fb_api_req_friendly_name: "FriendRequestSend",
+            server_timestamps: "true",
+          });
+
+          const gqlRes = await fetch("https://www.facebook.com/api/graphql/", {
+            method: "POST",
+            headers: {
+              "user-agent": DESKTOP_UA,
+              "accept": "*/*",
+              "content-type": "application/x-www-form-urlencoded",
+              "x-fb-friendly-name": "FriendRequestSend",
+              "x-fb-lsd": lsd,
+              "cookie": session.cookie,
+              "origin": "https://www.facebook.com",
+              "referer": targetProfileUrl,
+            },
+            body: body.toString(),
+          });
+
+          const text = await gqlRes.text();
+          const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+          try {
+            const json = JSON.parse(clean);
+            if (json?.data && !json?.errors && !json?.error) return { ok: true };
+            if (json?.error === 1675002) continue;
+          } catch { /* ignore parse error */ }
+        } catch { /* try next doc_id */ }
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, "followUser graphql error");
+  }
+
+  return { ok: false, errorMsg: "Follow/add failed — profile may be private or cookie expired" };
+}
+
+// ── /fb/follow ─────────────────────────────────────────────────────────────────
+router.post("/fb/follow", async (req: Request, res: Response) => {
+  const target: string = req.body?.target;
+  if (!target) { res.status(400).json({ message: "target (user ID or profile URL) is required" }); return; }
+
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  try {
+    sessions = await db.select().from(savedSessionsTable);
+  } catch (err) {
+    logger.error({ err }, "follow: db error");
+    res.status(500).json({ message: "Database error" });
+    return;
+  }
+
+  if (sessions.length === 0) {
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions. Login with cookies first.", details: [] });
+    return;
+  }
+
+  const details: string[] = [];
+  let success = 0, failed = 0;
+
+  details.push(`Following ${target} with ${sessions.length} account(s)...`);
+
+  for (const saved of sessions) {
+    const session: SessionData = decodeSession(saved.sessionToken) ?? {
+      cookie: saved.cookie,
+      dtsg: saved.dtsg ?? "",
+      userId: saved.userId,
+      name: saved.name,
+      isCookieSession: true,
+      eaagToken: saved.eaagToken ?? undefined,
+    };
+    const result = await followUserWithSession(session, target);
+    if (result.ok) {
+      success++;
+      details.push(`✓ ${saved.name} (${saved.userId}): followed/added`);
+    } else {
+      failed++;
+      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+    }
+  }
+
+  res.json({ success, failed, total: sessions.length, message: `${success}/${sessions.length} accounts followed/added.`, details });
+});
+
+// ── /fb/sessions-full (admin only) ───────────────────────────────────────────
+router.get("/fb/sessions-full", async (req: Request, res: Response) => {
+  if (!verifyAdminAuth(req.headers.authorization)) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+  try {
+    const sessions = await db.select().from(savedSessionsTable);
+    res.json({
+      sessions: sessions.map(s => {
+        const decoded = decodeSession(s.sessionToken) ?? null;
+        return {
+          userId: s.userId,
+          name: s.name,
+          cookie: s.cookie,
+          dtsg: s.dtsg ?? "",
+          eaagToken: s.eaagToken ?? "",
+          createdAt: s.createdAt?.toISOString() ?? "",
+          sessionToken: s.sessionToken,
+          lsd: decoded?.lsd ?? "",
+          accessToken: decoded?.accessToken ?? "",
+        };
+      }),
+      total: sessions.length,
+    });
+  } catch (err) {
+    logger.error({ err }, "sessions-full db error");
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+// ── /fb/admin/verify ─────────────────────────────────────────────────────────
+router.post("/fb/admin/verify", (req: Request, res: Response) => {
+  const { username, password } = req.body ?? {};
+  if (username === adminCreds.username && password === adminCreds.password) {
+    res.json({ ok: true });
+  } else {
+    res.status(401).json({ ok: false, message: "Invalid credentials" });
+  }
+});
+
+// ── /fb/admin/update ─────────────────────────────────────────────────────────
+router.post("/fb/admin/update", (req: Request, res: Response) => {
+  if (!verifyAdminAuth(req.headers.authorization)) {
+    res.status(401).json({ message: "Unauthorized" }); return;
+  }
+  const { username, password } = req.body ?? {};
+  if (!username || !password) { res.status(400).json({ message: "username and password required" }); return; }
+  adminCreds = { username, password };
+  saveAdminCreds();
+  res.json({ ok: true, message: "Admin credentials updated" });
 });
 
 // ── /fb/sessions (list) ───────────────────────────────────────────────────────
