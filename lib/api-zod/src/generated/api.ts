@@ -222,7 +222,7 @@ export const FbUnfriendResponse = zod.object({
 export const FbSharePostBody = zod.object({
   token: zod.string(),
   postUrl: zod.string(),
-  count: zod.number().min(1).max(100),
+  count: zod.number().min(1),
 });
 
 export const FbSharePostResponse = zod.object({

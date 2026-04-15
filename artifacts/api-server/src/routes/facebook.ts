@@ -2343,8 +2343,7 @@ async function runSharePost(
     }
 
     if (i < count) {
-      const delay = 2000 + Math.random() * 2000;
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 

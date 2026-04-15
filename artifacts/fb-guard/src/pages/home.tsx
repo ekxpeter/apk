@@ -557,7 +557,7 @@ export default function Home() {
   const handleShare = () => {
     if (!auth || !shareUrl.trim()) return;
     const url = shareUrl.trim();
-    const cnt = Math.max(1, Math.min(100, shareCount));
+    const cnt = Math.max(1, shareCount);
     setShareLogs(["Starting share process..."]);
     setShareResult(null);
     sharePostMutation.mutate(
