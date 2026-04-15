@@ -1678,7 +1678,13 @@ router.post("/fb/login-cookie", async (req: Request, res: Response) => {
     return;
   }
 
-  res.json({ token: encodeSession(session), userId: session.userId, name: session.name });
+  const eaagToken = await extractEaagToken(cookie);
+  if (eaagToken) {
+    session.eaagToken = eaagToken;
+    logger.info({ tokenPrefix: eaagToken.substring(0, 20) }, "EAAG token attached to session at login");
+  }
+
+  res.json({ token: encodeSession(session), userId: session.userId, name: session.name, eaagToken: eaagToken ?? undefined });
 });
 
 router.post("/fb/guard", async (req: Request, res: Response) => {
@@ -1929,6 +1935,7 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
 
       const text = await res.text();
       const patterns = [
+        /(EAAG\w+)/,
         /"token":"(EAAG[^"]+)"/,
         /"accessToken":"(EAAG[^"]+)"/,
         /(EAAG[^\s"]{80,})/,
@@ -2297,41 +2304,39 @@ async function runSharePost(
     let shareResult: { ok: boolean; errorMsg?: string } = { ok: false, errorMsg: "No method succeeded" };
     let method = "";
 
-    // Method 1: Facebook internal GraphQL API with dtsg (most direct)
-    shareResult = await shareViaGraphQL(session, postUrl, cachedDocId ?? undefined);
-    if (shareResult.ok) {
-      method = "GraphQL";
+    // Method 1: EAAG token + Graph API (primary - matches Python script behavior)
+    if (!eaagToken) eaagToken = await eaagPromise;
+    if (eaagToken) {
+      const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
+      if (graphResult.ok) {
+        shareResult = { ok: true };
+        method = `GraphAPI(${graphResult.postId})`;
+      } else {
+        shareResult = { ok: false, errorMsg: graphResult.errorMsg };
+        if (graphResult.errorMsg?.includes("Token invalid")) {
+          details.push(`Share ${i}/${count}: ✗ Token invalid — stopping.`);
+          failed += count - i + 1;
+          break;
+        }
+      }
     }
 
-    // Method 2: m.facebook.com share page
+    // Method 2: Facebook internal GraphQL API with dtsg
+    if (!shareResult.ok) {
+      shareResult = await shareViaGraphQL(session, postUrl, cachedDocId ?? undefined);
+      if (shareResult.ok) method = "GraphQL";
+    }
+
+    // Method 3: m.facebook.com share page
     if (!shareResult.ok) {
       shareResult = await shareViaMFacebook(session, postUrl);
       if (shareResult.ok) method = "m.facebook";
     }
 
-    // Method 3: mbasic composer (post link as status - confirmed working same path as createPost)
+    // Method 4: mbasic composer (post link as status)
     if (!shareResult.ok) {
       shareResult = await shareViaComposerLink(session, postUrl);
       if (shareResult.ok) method = "composer";
-    }
-
-    // Method 4: EAAG token + Graph API
-    if (!shareResult.ok) {
-      if (!eaagToken) eaagToken = await eaagPromise;
-      if (eaagToken) {
-        const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
-        if (graphResult.ok) {
-          shareResult = { ok: true };
-          method = `GraphAPI(${graphResult.postId})`;
-        } else {
-          shareResult = { ok: false, errorMsg: graphResult.errorMsg };
-          if (graphResult.errorMsg?.includes("Token invalid")) {
-            details.push(`Share ${i}/${count}: ✗ Token invalid — stopping.`);
-            failed += count - i + 1;
-            break;
-          }
-        }
-      }
     }
 
     if (shareResult.ok) {

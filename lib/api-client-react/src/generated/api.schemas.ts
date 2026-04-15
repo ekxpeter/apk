@@ -22,6 +22,7 @@ export interface FbLoginResponse {
   token: string;
   userId: string;
   name: string;
+  eaagToken?: string;
 }
 
 export interface FbGuardRequest {

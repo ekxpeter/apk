@@ -100,6 +100,7 @@ type AuthState = {
   token: string;
   userId: string;
   name: string;
+  eaagToken?: string;
 } | null;
 
 type Post = { id: string; message: string; createdTime: string; permalink?: string };
@@ -280,8 +281,8 @@ export default function Home() {
     );
   };
 
-  const onLoginSuccess = (data: { token: string; userId: string; name: string }) => {
-    setAuth({ token: data.token, userId: data.userId, name: data.name });
+  const onLoginSuccess = (data: { token: string; userId: string; name: string; eaagToken?: string }) => {
+    setAuth({ token: data.token, userId: data.userId, name: data.name, eaagToken: data.eaagToken });
     setGuardStatus(null);
     setProfile(null);
     setPosts([]);
@@ -880,22 +881,26 @@ export default function Home() {
                 </button>
               </CardHeader>
               {showToken && (
-                <CardContent className="p-4 pt-3">
-                  <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                    Your local session token (contains your cookies/credentials encoded as base64):
-                  </p>
-                  <div className="flex items-start gap-2 rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
-                    <p className="flex-1 break-all font-mono text-xs text-slate-700 dark:text-slate-300">
-                      {auth.token}
-                    </p>
-                    <button
-                      onClick={() => copyToClipboard(auth.token, "Access token")}
-                      className="mt-0.5 shrink-0 text-[#1877F2] hover:text-[#0f66d4]"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                  <p className="mt-2 text-xs text-slate-400">UID: {auth.userId}</p>
+                <CardContent className="p-4 pt-3 space-y-3">
+                  {auth.eaagToken ? (
+                    <div>
+                      <p className="mb-1 text-xs font-semibold text-[#1877F2]">EAAG Access Token (from business.facebook.com):</p>
+                      <div className="flex items-start gap-2 rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
+                        <p className="flex-1 break-all font-mono text-xs text-slate-700 dark:text-slate-300">
+                          {auth.eaagToken}
+                        </p>
+                        <button
+                          onClick={() => copyToClipboard(auth.eaagToken!, "EAAG token")}
+                          className="mt-0.5 shrink-0 text-[#1877F2] hover:text-[#0f66d4]"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">EAAG token not found. Cookie may not have access to business.facebook.com.</p>
+                  )}
+                  <p className="text-xs text-slate-400">UID: {auth.userId}</p>
                 </CardContent>
               )}
             </Card>

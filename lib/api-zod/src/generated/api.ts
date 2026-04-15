@@ -27,6 +27,7 @@ export const FbLoginResponse = zod.object({
   token: zod.string(),
   userId: zod.string(),
   name: zod.string(),
+  eaagToken: zod.string().optional(),
 });
 
 /**
@@ -40,6 +41,7 @@ export const FbLoginCookieResponse = zod.object({
   token: zod.string(),
   userId: zod.string(),
   name: zod.string(),
+  eaagToken: zod.string().optional(),
 });
 
 /**
