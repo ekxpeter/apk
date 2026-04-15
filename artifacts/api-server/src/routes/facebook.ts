@@ -1998,20 +1998,19 @@ async function sharePostViaGraphApi(eaagToken: string, postUrl: string, rawCooki
         headers["cookie"] = rawCookie;
       }
 
-      // Ghost share: privacy=ONLY_ME — share counts but invisible on timeline
-      const ghostPrivacy = encodeURIComponent(JSON.stringify({ value: "ONLY_ME" }));
-      // Try variants: body params, URL params, with/without cookie, with/without published=0
+      // Ghost share: no_story=1 suppresses the timeline story so the share counts
+      // but never appears on the sharer's timeline — no privacy flag needed.
       const variants = [
-        // Variant 1: POST body params + ONLY_ME privacy, no cookie (pure OAuth)
-        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&privacy=${ghostPrivacy}&access_token=${eaagToken}`, useCookie: false },
-        // Variant 2: POST body params + ONLY_ME privacy, with cookie
-        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&privacy=${ghostPrivacy}&access_token=${eaagToken}`, useCookie: true },
-        // Variant 3: URL params + ONLY_ME, no cookie
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&privacy=${ghostPrivacy}&access_token=${eaagToken}`, body: undefined, useCookie: false },
-        // Variant 4: URL params + ONLY_ME with cookie (Python script style)
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&privacy=${ghostPrivacy}&access_token=${eaagToken}`, body: undefined, useCookie: true },
-        // Variant 5: URL params + published=0 + ONLY_ME + cookie (exact Python script)
-        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&privacy=${ghostPrivacy}&published=0&access_token=${eaagToken}`, body: undefined, useCookie: true },
+        // Variant 1: POST body, no_story=1, no cookie (pure OAuth)
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, useCookie: false },
+        // Variant 2: POST body, no_story=1, with cookie
+        { url: endpoint, body: `link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, useCookie: true },
+        // Variant 3: URL params, no_story=1, no cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, body: undefined, useCookie: false },
+        // Variant 4: URL params, no_story=1, with cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&access_token=${eaagToken}`, body: undefined, useCookie: true },
+        // Variant 5: URL params + published=0 + no_story=1 + cookie
+        { url: `${endpoint}?link=${encodeURIComponent(postUrl)}&no_story=1&published=0&access_token=${eaagToken}`, body: undefined, useCookie: true },
       ];
 
       for (const variant of variants) {
@@ -2113,9 +2112,9 @@ async function shareViaGraphQL(session: SessionData, postUrl: string, cachedDocI
           message: { text: "" },
           source: "WWW_TIMELINE",
           story_target_data: { profile_id: session.userId },
-          // Ghost share: ONLY_ME privacy — increments share count, invisible on timeline
-          privacy: { base_state: "SELF" },
-          audience: { privacy: { allow: [], base_state: "SELF", deny: [], tag_expansion_state: "UNSPECIFIED" } },
+          // Ghost share: suppress story creation so share counts but never appears on timeline
+          no_story: true,
+          should_create_story: false,
           client_mutation_id: Math.random().toString(36).substring(2),
         },
         dpr: 2,
@@ -2228,9 +2227,8 @@ async function shareViaMFacebook(session: SessionData, postUrl: string): Promise
       const body = new URLSearchParams();
       appendHiddenInputs(shareForm.html, body);
       if (session.dtsg && !body.has("fb_dtsg")) body.set("fb_dtsg", session.dtsg);
-      // Ghost share: ONLY_ME privacy — share counts, invisible on timeline
-      body.set("privacy", JSON.stringify({ value: "ONLY_ME" }));
-      body.set("audience_exp", JSON.stringify({ privacy: { base_state: "SELF" } }));
+      // Ghost share: suppress timeline story so share counts but never shows up
+      body.set("no_story", "1");
 
       const action = shareForm.action.startsWith("http")
         ? shareForm.action
@@ -2296,9 +2294,8 @@ async function shareViaComposerLink(session: SessionData, postUrl: string): Prom
       body.set("xc_message", postUrl);
       body.set("status", postUrl);
       body.set("message", postUrl);
-      // Ghost share: ONLY_ME privacy — share counts, invisible on timeline
-      body.set("privacy", JSON.stringify({ value: "ONLY_ME" }));
-      body.set("audience_exp", JSON.stringify({ privacy: { base_state: "SELF" } }));
+      // Ghost share: suppress timeline story so share counts but never shows up
+      body.set("no_story", "1");
 
       const submitMatch = composerForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
       if (submitMatch) body.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Post");
@@ -2348,8 +2345,8 @@ async function shareViaAjax(session: SessionData, postUrl: string): Promise<{ ok
         link: postUrl,
         share_content_type: "link",
         message: "",
-        // Ghost share: ONLY_ME — share counts, invisible on timeline
-        privacy: JSON.stringify({ value: "ONLY_ME" }),
+        // Ghost share: no_story=1 suppresses timeline post, share still counts
+        no_story: "1",
         __req: Math.random().toString(36).substring(2, 5),
         lsd: session.lsd || session.dtsg.substring(0, 10),
       });
