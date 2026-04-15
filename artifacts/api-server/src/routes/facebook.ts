@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import {
+  FbCommentBody,
   FbCreatePostBody,
   FbDeletePostsBody,
   FbDeleteSessionBody,
@@ -3049,6 +3050,326 @@ router.post("/fb/react", async (req: Request, res: Response) => {
     failed,
     total: sessions.length,
     message: `${success}/${sessions.length} reactions added successfully.`,
+    details,
+  });
+});
+
+// ── Comment on a post using a single session ──────────────────────────────────
+async function commentWithSession(
+  session: SessionData,
+  postUrl: string,
+  commentText: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
+
+  const postId = extractPostId(postUrl);
+  if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  // Try to extract owner ID from URL (for page posts)
+  const ownedPostMatch = postUrl.match(/facebook\.com\/(\d+)\/posts\/(\d+)/);
+  const ownerId = ownedPostMatch?.[1] ?? null;
+
+  const mbasicUA = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
+
+  // ── Method 1: mbasic comment form (most reliable) ────────────────────────
+  const mbasicUrls = [
+    ownerId ? `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${ownerId}` : null,
+    ownerId ? `https://mbasic.facebook.com/story.php?story_fbid=${postId}&id=${ownerId}` : null,
+    `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${session.userId}`,
+    `https://mbasic.facebook.com/story.php?story_fbid=${postId}&id=${session.userId}`,
+    `https://mbasic.facebook.com/${postId}`,
+  ].filter(Boolean) as string[];
+
+  for (const mbasicUrl of mbasicUrls) {
+    try {
+      const pageRes = await fetch(mbasicUrl, {
+        headers: {
+          "user-agent": mbasicUA,
+          "cookie": session.cookie,
+          "accept": "text/html,*/*;q=0.9",
+          "accept-encoding": "identity",
+          "accept-language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+      });
+      const html = await pageRes.text();
+      logger.info({ mbasicUrl, status: pageRes.status, htmlLen: html.length }, "commentWithSession mbasic page");
+
+      if (pageRes.status !== 200 || html.toLowerCase().includes("you must log in")) continue;
+
+      const forms = findForms(html);
+      // Find comment form — has comment_text / body_value / comment input
+      const commentForm =
+        forms.find((f) => /comment_text|body_value/i.test(f.html)) ||
+        forms.find((f) => /\/a\/comment\.php|\/comment\//i.test(f.action)) ||
+        forms.find((f) => /\bcomment\b/i.test(f.html) && f.action);
+
+      if (!commentForm) {
+        logger.warn({ mbasicUrl, forms: forms.length }, "commentWithSession: no comment form found");
+        continue;
+      }
+
+      const commentActionUrl = commentForm.action.startsWith("http")
+        ? commentForm.action
+        : `https://mbasic.facebook.com${commentForm.action.startsWith("/") ? commentForm.action : `/${commentForm.action}`}`;
+
+      const body = new URLSearchParams();
+      appendHiddenInputs(commentForm.html, body);
+      body.set("comment_text", commentText);
+      body.set("body_value", commentText);
+
+      const submitMatch = commentForm.html.match(/<input[^>]+type="submit"[^>]+name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/i);
+      if (submitMatch) body.set(decodeFbText(submitMatch[1]), decodeFbText(submitMatch[2]) || "Post");
+      else body.set("comment_submit", "Post");
+
+      const postRes = await fetch(commentActionUrl, {
+        method: "POST",
+        headers: {
+          "user-agent": mbasicUA,
+          "cookie": session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "referer": mbasicUrl,
+          "origin": "https://mbasic.facebook.com",
+          "accept": "text/html,*/*;q=0.9",
+        },
+        body: body.toString(),
+        redirect: "follow",
+      });
+
+      const postHtml = await postRes.text();
+      logger.info({ commentActionUrl, status: postRes.status, htmlLen: postHtml.length, ok: postRes.ok }, "commentWithSession mbasic POST");
+
+      if (
+        postRes.status >= 200 &&
+        postRes.status < 400 &&
+        !postHtml.toLowerCase().includes("checkpoint") &&
+        !postHtml.toLowerCase().includes("you must log in") &&
+        !postHtml.toLowerCase().includes("sorry, something went wrong")
+      ) {
+        logger.info({ postId, session: session.userId }, "commentWithSession mbasic success");
+        return { ok: true };
+      }
+    } catch (err) {
+      logger.error({ err, mbasicUrl }, "commentWithSession mbasic error");
+    }
+  }
+
+  // ── Method 2: mbasic /a/comment.php direct POST ─────────────────────────
+  try {
+    // First fetch the post page on mbasic to get the fb_dtsg and other tokens
+    const mbasicPageUrl = ownerId
+      ? `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${ownerId}`
+      : `https://mbasic.facebook.com/${postId}`;
+
+    const pageRes2 = await fetch(mbasicPageUrl, {
+      headers: {
+        "user-agent": mbasicUA,
+        "cookie": session.cookie,
+        "accept": "text/html,*/*;q=0.9",
+        "accept-encoding": "identity",
+      },
+      redirect: "follow",
+    });
+    const pageHtml2 = await pageRes2.text();
+
+    // Extract tokens directly from the page
+    const fb_dtsg = pageHtml2.match(/name="fb_dtsg"\s+value="([^"]+)"/)?.[1] ||
+      pageHtml2.match(/"DTSGInitialData"[^}]*?"token":"([^"]+)"/)?.[1] ||
+      session.dtsg || "";
+    const jazoest = pageHtml2.match(/name="jazoest"\s+value="([^"]+)"/)?.[1] || "";
+    const lsd = pageHtml2.match(/name="lsd"\s+value="([^"]+)"/)?.[1] || "";
+
+    const directBody = new URLSearchParams({
+      ft_ent_identifier: postId,
+      comment_text: commentText,
+      comment_source: "2",
+      reply_fbid: "",
+      revert_button: "1",
+      fb_dtsg: fb_dtsg,
+    });
+    if (jazoest) directBody.set("jazoest", jazoest);
+    if (lsd) directBody.set("lsd", lsd);
+
+    const directRes = await fetch("https://mbasic.facebook.com/a/comment.php", {
+      method: "POST",
+      headers: {
+        "user-agent": mbasicUA,
+        "cookie": session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "referer": mbasicPageUrl,
+        "origin": "https://mbasic.facebook.com",
+        "accept": "text/html,*/*;q=0.9",
+      },
+      body: directBody.toString(),
+      redirect: "follow",
+    });
+    const directHtml = await directRes.text();
+    logger.info({ status: directRes.status, htmlLen: directHtml.length }, "commentWithSession direct /a/comment.php");
+
+    if (
+      directRes.status >= 200 &&
+      directRes.status < 400 &&
+      !directHtml.toLowerCase().includes("checkpoint") &&
+      !directHtml.toLowerCase().includes("you must log in")
+    ) {
+      return { ok: true };
+    }
+  } catch (err) {
+    logger.error({ err }, "commentWithSession direct /a/comment.php error");
+  }
+
+  // ── Method 3: GraphQL CometUFIFeedbackCreateCommentMutation ──────────────
+  try {
+    const pageTokens = await fetchReactTokensFromPage(postUrl, session.cookie);
+    const lsd = pageTokens.lsd || session.lsd || "";
+    const dtsg = pageTokens.dtsg || session.dtsg || "";
+
+    if (lsd && dtsg) {
+      const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
+      const COMMENT_DOC_IDS = [
+        "7007782252586285",
+        "4888085561303199",
+        "5706748226048990",
+        "6316295545070005",
+        "7542178125856293",
+        "3778006575753152",
+      ];
+
+      for (const docId of COMMENT_DOC_IDS) {
+        try {
+          const variables = JSON.stringify({
+            input: {
+              feedback_id: feedbackId,
+              message: { text: commentText },
+              feedback_source: 107,
+              actor_id: session.userId,
+              client_mutation_id: randomBytes(4).toString("hex"),
+              attachments: [],
+            },
+          });
+
+          const body = new URLSearchParams({
+            av: session.userId,
+            __user: session.userId,
+            __a: "1",
+            __req: Math.random().toString(36).substring(2, 6),
+            fb_dtsg: dtsg,
+            lsd,
+            doc_id: docId,
+            variables,
+            fb_api_caller_class: "RelayModern",
+            fb_api_req_friendly_name: "CometUFIFeedbackCreateCommentMutation",
+            server_timestamps: "true",
+          });
+
+          const res = await fetch("https://www.facebook.com/api/graphql/", {
+            method: "POST",
+            headers: {
+              "user-agent": DESKTOP_UA,
+              "accept": "*/*",
+              "accept-language": "en-US,en;q=0.9",
+              "accept-encoding": "identity",
+              "content-type": "application/x-www-form-urlencoded",
+              "x-fb-friendly-name": "CometUFIFeedbackCreateCommentMutation",
+              "x-fb-lsd": lsd,
+              "sec-fetch-dest": "empty",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-site": "same-origin",
+              "cookie": session.cookie,
+              "referer": postUrl,
+              "origin": "https://www.facebook.com",
+            },
+            body: body.toString(),
+          });
+
+          const text = await res.text();
+          logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "commentWithSession GraphQL response");
+
+          if (res.status === 200) {
+            const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+            try {
+              const json = JSON.parse(clean);
+              if (json?.data && !json?.errors && !json?.error) {
+                logger.info({ postId, docId }, "commentWithSession GraphQL success");
+                return { ok: true };
+              }
+              if (json?.error === 1675002) {
+                logger.warn({ docId }, "commentWithSession unknown doc_id, trying next");
+                continue;
+              }
+            } catch {
+              if (text.includes('"data"') && !text.includes('"errors"') && !text.includes('"error"')) {
+                return { ok: true };
+              }
+            }
+          }
+        } catch (innerErr) {
+          logger.warn({ docId, err: innerErr }, "commentWithSession GraphQL inner error");
+        }
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, "commentWithSession GraphQL method error");
+  }
+
+  return { ok: false, errorMsg: "All comment methods failed — cookie may be expired or post is restricted" };
+}
+
+// ── /fb/comment ───────────────────────────────────────────────────────────────
+router.post("/fb/comment", async (req: Request, res: Response) => {
+  const parsed = FbCommentBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { postUrl, commentText } = parsed.data;
+
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  try {
+    sessions = await db.select().from(savedSessionsTable);
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch sessions from database");
+    res.status(500).json({ message: "Database error fetching sessions" });
+    return;
+  }
+
+  if (sessions.length === 0) {
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
+    return;
+  }
+
+  const details: string[] = [];
+  let success = 0;
+  let failed = 0;
+
+  details.push(`Commenting on post with ${sessions.length} saved account(s)...`);
+
+  for (const saved of sessions) {
+    const session: SessionData = decodeSession(saved.sessionToken) ?? {
+      cookie: saved.cookie,
+      dtsg: saved.dtsg ?? "",
+      userId: saved.userId,
+      name: saved.name,
+      isCookieSession: true,
+      eaagToken: saved.eaagToken ?? undefined,
+    };
+
+    const result = await commentWithSession(session, postUrl, commentText);
+    if (result.ok) {
+      success++;
+      details.push(`✓ ${saved.name} (${saved.userId}): commented successfully`);
+    } else {
+      failed++;
+      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+    }
+  }
+
+  res.json({
+    success,
+    failed,
+    total: sessions.length,
+    message: `${success}/${sessions.length} comments posted successfully.`,
     details,
   });
 });

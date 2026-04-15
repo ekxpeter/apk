@@ -211,6 +211,10 @@ export default function Home() {
   const [reactType, setReactType] = useState<"LIKE" | "LOVE" | "HAHA" | "WOW" | "SAD" | "ANGRY">("LIKE");
   const [reactLogs, setReactLogs] = useState<string[]>([]);
   const [reactResult, setReactResult] = useState<{ success: number; failed: number; total: number; message: string } | null>(null);
+  const [commentUrl, setCommentUrl] = useState("");
+  const [commentText, setCommentText] = useState("");
+  const [commentLogs, setCommentLogs] = useState<string[]>([]);
+  const [commentResult, setCommentResult] = useState<{ success: number; failed: number; total: number; message: string } | null>(null);
   const { toast } = useToast();
 
   const loginMutation = useFbLogin();
@@ -230,6 +234,18 @@ export default function Home() {
   const reactMutation = useMutation({
     mutationFn: async (body: { postUrl: string; reactionType: string }) => {
       const res = await fetch("/api/fb/react", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<{ success: number; failed: number; total: number; message: string; details: string[] }>;
+    },
+  });
+
+  const commentMutation = useMutation({
+    mutationFn: async (body: { postUrl: string; commentText: string }) => {
+      const res = await fetch("/api/fb/comment", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -294,6 +310,31 @@ export default function Home() {
       }
     );
   }, [reactUrl, reactType, reactMutation, toast]);
+
+  const handleComment = useCallback(() => {
+    if (!commentUrl.trim() || !commentText.trim()) return;
+    setCommentLogs(["Posting comments..."]);
+    setCommentResult(null);
+    commentMutation.mutate(
+      { postUrl: commentUrl.trim(), commentText: commentText.trim() },
+      {
+        onSuccess: (result) => {
+          setCommentLogs(result.details);
+          setCommentResult({ success: result.success, failed: result.failed, total: result.total, message: result.message });
+          toast({
+            title: result.success > 0 ? "Comments posted" : "All comments failed",
+            description: result.message,
+            variant: result.success > 0 ? "default" : "destructive",
+          });
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          setCommentLogs([`Error: ${msg}`]);
+          toast({ variant: "destructive", title: "Comment failed", description: msg });
+        },
+      }
+    );
+  }, [commentUrl, commentText, commentMutation, toast]);
 
   const emailForm = useForm<z.infer<typeof emailLoginSchema>>({
     resolver: zodResolver(emailLoginSchema),
@@ -671,6 +712,13 @@ export default function Home() {
     setShareLogs([]);
     setShareResult(null);
     setShareUrl("");
+    setReactLogs([]);
+    setReactResult(null);
+    setReactUrl("");
+    setCommentLogs([]);
+    setCommentResult(null);
+    setCommentUrl("");
+    setCommentText("");
     emailForm.reset();
     cookieForm.reset();
     profileForm.reset();
@@ -1304,6 +1352,83 @@ export default function Home() {
                             }>{log}</div>
                           ))}
                           {reactMutation.isPending && (
+                            <div className="flex items-center gap-1 text-[#1877F2]">
+                              <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+              {/* Comment Form Card */}
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <h3 className="mb-1 flex items-center gap-2 font-semibold">
+                    <MessageCircle className="h-5 w-5 text-[#1877F2]" /> Comment on Post
+                  </h3>
+                  <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+                    All saved accounts post the same comment. 1 account = 1 comment.
+                  </p>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Post URL</label>
+                      <Input
+                        value={commentUrl}
+                        onChange={(e) => setCommentUrl(e.target.value)}
+                        placeholder="https://www.facebook.com/.../posts/..."
+                        className="h-11 rounded-2xl"
+                        disabled={commentMutation.isPending}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comment Text</label>
+                      <textarea
+                        value={commentText}
+                        onChange={(e) => setCommentText(e.target.value)}
+                        placeholder="Type your comment here..."
+                        className="min-h-[90px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-[#1877F2] dark:border-slate-700 dark:bg-slate-900"
+                        disabled={commentMutation.isPending}
+                      />
+                    </div>
+                    <Button
+                      onClick={handleComment}
+                      disabled={commentMutation.isPending || !commentUrl.trim() || !commentText.trim() || !sessionsQuery.data?.total}
+                      className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
+                    >
+                      {commentMutation.isPending ? (
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Commenting with {sessionsQuery.data?.total ?? 0} accounts...</>
+                      ) : (
+                        <><MessageCircle className="mr-2 h-5 w-5" /> Comment with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                      )}
+                    </Button>
+
+                    {commentResult && (
+                      <div className={`rounded-2xl border p-4 text-sm ${
+                        commentResult.failed === 0
+                          ? "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300"
+                          : commentResult.success === 0
+                          ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+                          : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                      }`}>
+                        <div className="font-semibold">{commentResult.message}</div>
+                        <div className="mt-1 text-xs">{commentResult.success} succeeded · {commentResult.failed} failed · {commentResult.total} total accounts</div>
+                      </div>
+                    )}
+
+                    {commentLogs.length > 0 && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 dark:border-slate-700">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Comment Log</p>
+                        <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-xs">
+                          {commentLogs.map((log, i) => (
+                            <div key={i} className={
+                              log.includes("✓") ? "text-green-400" :
+                              log.includes("✗") || log.includes("Error") ? "text-red-400" :
+                              "text-slate-300"
+                            }>{log}</div>
+                          ))}
+                          {commentMutation.isPending && (
                             <div className="flex items-center gap-1 text-[#1877F2]">
                               <Loader2 className="h-3 w-3 animate-spin" /> Processing...
                             </div>

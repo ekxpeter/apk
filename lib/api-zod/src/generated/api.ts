@@ -276,3 +276,19 @@ export const FbDeleteSessionResponse = zod.object({
   success: zod.boolean(),
   message: zod.string(),
 });
+
+/**
+ * @summary Comment on a Facebook post using all saved sessions
+ */
+export const FbCommentBody = zod.object({
+  postUrl: zod.string(),
+  commentText: zod.string(),
+});
+
+export const FbCommentResponse = zod.object({
+  success: zod.number(),
+  failed: zod.number(),
+  total: zod.number(),
+  message: zod.string(),
+  details: zod.array(zod.string()),
+});
