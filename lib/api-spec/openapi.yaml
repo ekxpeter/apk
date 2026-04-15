@@ -290,6 +290,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fb/unfriend:
+    post:
+      operationId: fbUnfriend
+      tags: [facebook]
+      summary: Unfriend a Facebook friend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FbUnfriendRequest"
+      responses:
+        "200":
+          description: Unfriend result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FbUnfriendResponse"
+        "400":
+          description: Failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -508,12 +532,12 @@ components:
           type: string
         imageData:
           type: string
+        imageUrl:
+          type: string
         fileName:
           type: string
       required:
         - token
-        - imageData
-        - fileName
     FbUpdateProfilePictureResponse:
       type: object
       properties:
@@ -583,6 +607,26 @@ components:
           type: string
       required:
         - videos
+        - message
+    FbUnfriendRequest:
+      type: object
+      properties:
+        token:
+          type: string
+        friendId:
+          type: string
+      required:
+        - token
+        - friendId
+    FbUnfriendResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
         - message
     ErrorResponse:
       type: object

@@ -149,8 +149,9 @@ export const FbUpdateProfileResponse = zod.object({
  */
 export const FbUpdateProfilePictureBody = zod.object({
   token: zod.string(),
-  imageData: zod.string(),
-  fileName: zod.string(),
+  imageData: zod.string().optional(),
+  imageUrl: zod.string().optional(),
+  fileName: zod.string().optional(),
 });
 
 export const FbUpdateProfilePictureResponse = zod.object({
@@ -199,5 +200,18 @@ export const FbGetVideosResponse = zod.object({
       createdTime: zod.string(),
     }),
   ),
+  message: zod.string(),
+});
+
+/**
+ * @summary Unfriend a Facebook friend
+ */
+export const FbUnfriendBody = zod.object({
+  token: zod.string(),
+  friendId: zod.string(),
+});
+
+export const FbUnfriendResponse = zod.object({
+  success: zod.boolean(),
   message: zod.string(),
 });

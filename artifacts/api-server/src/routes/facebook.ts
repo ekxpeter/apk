@@ -9,6 +9,7 @@ import {
   FbLoginBody,
   FbLoginCookieBody,
   FbToggleGuardBody,
+  FbUnfriendBody,
   FbUpdateProfileBody,
   FbUpdateProfilePictureBody,
 } from "@workspace/api-zod";
@@ -666,14 +667,14 @@ async function getFriends(session: SessionData): Promise<{ friends: Friend[]; to
   const friends: Friend[] = [];
   const seen = new Set<string>();
   const addFriend = (id: string, name: string, profileUrl?: string, pictureUrl?: string) => {
-    const cleanName = decodeFbText(name).replace(/\s+/g, " ");
-    if (!id || id === session.userId || !cleanName || seen.has(id)) return;
+    const cleanName = decodeFbText(name).replace(/\s+/g, " ").trim();
+    if (!id || id === session.userId || !cleanName || cleanName.length < 2 || seen.has(id)) return;
     seen.add(id);
     friends.push({
       id,
       name: cleanName,
       profileUrl: profileUrl ? absoluteFacebookUrl(decodeFbText(profileUrl)) : `https://www.facebook.com/profile.php?id=${id}`,
-      pictureUrl: pictureUrl ? decodeFbText(pictureUrl) : `https://graph.facebook.com/${id}/picture?type=large`,
+      pictureUrl: pictureUrl ? decodeFbText(pictureUrl).replace(/\\\//g, "/") : `https://graph.facebook.com/${id}/picture?type=large&width=200&height=200`,
     });
   };
 
@@ -689,7 +690,7 @@ async function getFriends(session: SessionData): Promise<{ friends: Friend[]; to
       return {
         friends,
         total: json.summary?.total_count || friends.length,
-        message: friends.length > 0 ? "Friends loaded." : "Facebook only exposes friends who also authorized this app for password-token sessions.",
+        message: friends.length > 0 ? `Loaded ${friends.length} friend(s).` : "Facebook only exposes friends who also authorized this app for password-token sessions.",
       };
     } catch (err) {
       logger.error({ err }, "getFriends graph error");
@@ -700,55 +701,257 @@ async function getFriends(session: SessionData): Promise<{ friends: Friend[]; to
     return { friends, total: 0, message: "Friends can only be fetched from a valid cookie session." };
   }
 
-  const urls = [
-    `https://mbasic.facebook.com/profile.php?v=friends&id=${session.userId}`,
-    `https://m.facebook.com/profile.php?id=${session.userId}&sk=friends`,
-    `https://www.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+  // Strategy 1: GraphQL friends query
+  const friendsGqlDocIds = [
+    "4251588924880593",
+    "2601618133208954",
+    "9076143262399451",
+    "6455892821124024",
   ];
 
-  for (const url of urls) {
+  for (const docId of friendsGqlDocIds) {
+    if (friends.length > 0) break;
     try {
-      const res = await fetch(url, {
-        headers: { ...BROWSER_HEADERS, cookie: session.cookie, "user-agent": DESKTOP_UA },
-        redirect: "follow",
+      const variables = JSON.stringify({
+        id: session.userId,
+        count: 100,
+        cursor: null,
+        scale: 1,
       });
-      const html = await res.text();
-      logger.info({ url, status: res.status, len: html.length }, "getFriends page");
+      const body = new URLSearchParams({
+        fb_dtsg: session.dtsg,
+        variables,
+        doc_id: docId,
+      });
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": DESKTOP_UA,
+          "x-fb-friendly-name": "ProfileCometAppCollectionFriendsRendererPaginatedQuery",
+          "x-fb-lsd": session.dtsg.substring(0, 10),
+          origin: "https://www.facebook.com",
+          referer: `https://www.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+        },
+        body: body.toString(),
+      });
+      const text = await res.text();
+      logger.info({ docId, status: res.status, len: text.length, preview: text.substring(0, 300) }, "getFriends GQL");
 
-      const anchorPattern = /<a[^>]+href="([^"]*(?:profile\.php\?id=|\/friends\/hovercard\/mbasic\/\?uid=|facebook\.com\/)[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-      let match: RegExpExecArray | null;
-      while ((match = anchorPattern.exec(html)) !== null) {
-        const href = decodeFbText(match[1]);
-        const body = match[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-        const idMatch = href.match(/(?:id=|uid=)(\d+)/) || href.match(/facebook\.com\/(\d+)/);
-        if (!idMatch) continue;
-        const name = decodeFbText(body);
-        if (name.length > 1 && name.length < 90 && !/friends|message|add|remove|follow/i.test(name)) {
-          addFriend(idMatch[1], name, href);
-        }
+      if (res.status !== 200 || text.length < 50) continue;
+
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          // Various paths where friend nodes appear
+          const edgeSets = [
+            json?.data?.node?.friends?.edges,
+            json?.data?.node?.all_friends?.edges,
+            json?.data?.viewer?.friends?.edges,
+            json?.data?.user?.friends?.edges,
+          ];
+          for (const edges of edgeSets) {
+            if (!Array.isArray(edges)) continue;
+            for (const edge of edges) {
+              const node = edge?.node;
+              if (!node?.id || !node?.name) continue;
+              const picUrl = node?.profile_picture?.uri || node?.profilePicture?.uri || node?.picture?.uri;
+              addFriend(node.id, node.name, undefined, picUrl);
+            }
+          }
+        } catch { /* skip */ }
       }
-
-      const jsonPattern = /"__typename":"User","id":"(\d+)"[\s\S]{0,300}?"name":"([^"]+)"/g;
-      while ((match = jsonPattern.exec(html)) !== null) {
-        addFriend(match[1], match[2]);
-      }
-
-      const picPattern = /"profile_picture":\{"uri":"([^"]+)"[\s\S]{0,160}?"id":"(\d+)"[\s\S]{0,120}?"name":"([^"]+)"/g;
-      while ((match = picPattern.exec(html)) !== null) {
-        addFriend(match[2], match[3], undefined, match[1]);
-      }
-
-      if (friends.length > 0) break;
     } catch (err) {
-      logger.error({ err, url }, "getFriends scrape error");
+      logger.error({ err, docId }, "getFriends GQL error");
+    }
+  }
+
+  // Strategy 2: Scrape JSON embedded in the friends page HTML
+  if (friends.length === 0) {
+    const urls = [
+      `https://www.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+      `https://m.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+      `https://mbasic.facebook.com/profile.php?v=friends&id=${session.userId}`,
+    ];
+
+    for (const url of urls) {
+      if (friends.length > 0) break;
+      try {
+        const res = await fetch(url, {
+          headers: { ...BROWSER_HEADERS, cookie: session.cookie, "user-agent": DESKTOP_UA },
+          redirect: "follow",
+        });
+        const html = await res.text();
+        logger.info({ url, status: res.status, len: html.length }, "getFriends page scrape");
+
+        // Extract from embedded JSON: user nodes with picture
+        // Pattern: "profile_picture":{"uri":"..."}...  "id":"123"..."name":"Name"
+        const picIdNamePattern = /"profile_picture":\{"uri":"([^"]+)"[^}]*\}[^}]*?"id":"(\d+)"[^}]*?"name":"([^"]+)"/g;
+        let match: RegExpExecArray | null;
+        while ((match = picIdNamePattern.exec(html)) !== null) {
+          addFriend(match[2], match[3], undefined, match[1].replace(/\\\//g, "/"));
+        }
+
+        // Pattern: user node with id + name + profilePicture
+        const userBlockPattern = /"__typename":"User"[^}]{0,30}?"id":"(\d{5,20})"[^}]{0,200}?"name":"([^"]{2,100})"/g;
+        while ((match = userBlockPattern.exec(html)) !== null) {
+          // Look nearby for a picture URL
+          const near = html.slice(Math.max(0, match.index - 500), match.index + 500);
+          const picMatch = near.match(/"uri":"(https:\/\/[^"]*scontent[^"]+\.jpg[^"]*)"/);
+          addFriend(match[1], match[2], undefined, picMatch?.[1]);
+        }
+
+        // mbasic: anchor tags pointing to friend profiles
+        if (url.includes("mbasic")) {
+          const anchorPattern = /<a[^>]+href="\/([^"?]+)\?[^"]*"[^>]*>([^<]{2,80})<\/a>/g;
+          while ((match = anchorPattern.exec(html)) !== null) {
+            const href = match[1];
+            const name = decodeFbText(match[2].trim());
+            if (/^\d+$/.test(href) && name.length > 1 && !/friends|message|add|remove|follow|like|comment/i.test(name)) {
+              addFriend(href, name, `https://www.facebook.com/profile.php?id=${href}`);
+            }
+          }
+          // profile.php?id= links in mbasic
+          const idPattern = /profile\.php\?id=(\d+)[^"]*"[^>]*>([^<]{2,80})<\/a>/g;
+          while ((match = idPattern.exec(html)) !== null) {
+            const name = decodeFbText(match[2].trim());
+            if (name.length > 1 && !/friends|message|add|remove|follow|like|comment/i.test(name)) {
+              addFriend(match[1], name);
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, url }, "getFriends scrape error");
+      }
     }
   }
 
   return {
     friends: friends.slice(0, 500),
     total: friends.length,
-    message: friends.length > 0 ? `Loaded ${friends.length} friend(s).` : "No friends were returned by Facebook for this session.",
+    message: friends.length > 0 ? `Loaded ${friends.length} friend(s).` : "No friends were returned by Facebook for this session. The cookie may need to be refreshed.",
   };
+}
+
+async function unfriend(session: SessionData, friendId: string): Promise<{ success: boolean; message: string }> {
+  if (!session.isCookieSession || !session.cookie) {
+    return { success: false, message: "Unfriending requires a valid cookie session." };
+  }
+
+  // Strategy 1: GraphQL mutation
+  try {
+    const variables = JSON.stringify({
+      input: {
+        friend_id: friendId,
+        actor_id: session.userId,
+        client_mutation_id: randomUUID(),
+      },
+    });
+    const body = new URLSearchParams({
+      fb_dtsg: session.dtsg,
+      variables,
+      doc_id: "3428365090541592",
+    });
+    const res = await fetch("https://www.facebook.com/api/graphql/", {
+      method: "POST",
+      headers: {
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": DESKTOP_UA,
+        "x-fb-friendly-name": "FriendingCometUnfriendMutation",
+        "x-fb-lsd": session.dtsg.substring(0, 10),
+        origin: "https://www.facebook.com",
+        referer: `https://www.facebook.com/profile.php?id=${friendId}`,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+      },
+      body: body.toString(),
+    });
+    const text = await res.text();
+    logger.info({ friendId, status: res.status, body: text.substring(0, 400) }, "unfriend GQL response");
+
+    if (res.status === 200 && !text.includes('"errors"') && !text.includes('"error"')) {
+      return { success: true, message: `Successfully unfriended user ${friendId}.` };
+    }
+    if (text.includes("unfriend") || text.includes("removed")) {
+      return { success: true, message: `Successfully unfriended user ${friendId}.` };
+    }
+  } catch (err) {
+    logger.error({ err, friendId }, "unfriend GQL error");
+  }
+
+  // Strategy 2: mbasic form-based unfriend
+  try {
+    const profileUrl = `https://mbasic.facebook.com/profile.php?id=${friendId}&v=friends`;
+    const pageRes = await fetch(profileUrl, {
+      headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+      redirect: "follow",
+    });
+    const html = await pageRes.text();
+
+    const forms = findForms(html);
+    const unfriendForm = forms.find(
+      (form) => /unfriend|remove_friend|removefriend/i.test(form.action) ||
+                /unfriend|remove friend/i.test(form.html)
+    );
+
+    if (unfriendForm) {
+      const formBody = new URLSearchParams();
+      appendHiddenInputs(unfriendForm.html, formBody);
+      const host = "https://mbasic.facebook.com";
+      const action = unfriendForm.action.startsWith("http") ? unfriendForm.action : `${host}${unfriendForm.action.startsWith("/") ? unfriendForm.action : `/${unfriendForm.action}`}`;
+      const submitRes = await fetch(action, {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": DESKTOP_UA,
+          origin: host,
+          referer: profileUrl,
+        },
+        body: formBody.toString(),
+        redirect: "follow",
+      });
+      logger.info({ friendId, status: submitRes.status }, "unfriend mbasic form");
+      if (submitRes.ok) {
+        return { success: true, message: `Successfully unfriended user ${friendId}.` };
+      }
+    }
+
+    // Try the direct unfriend URL approach
+    const unfriendUrl = `https://www.facebook.com/ajax/profile/removefriend.php`;
+    const ajaxBody = new URLSearchParams({
+      uid: friendId,
+      fb_dtsg: session.dtsg,
+      __user: session.userId,
+    });
+    const ajaxRes = await fetch(unfriendUrl, {
+      method: "POST",
+      headers: {
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": DESKTOP_UA,
+        "x-requested-with": "XMLHttpRequest",
+        origin: "https://www.facebook.com",
+        referer: `https://www.facebook.com/profile.php?id=${friendId}`,
+      },
+      body: ajaxBody.toString(),
+    });
+    logger.info({ friendId, status: ajaxRes.status }, "unfriend ajax");
+    if (ajaxRes.ok) {
+      return { success: true, message: `Unfriend request sent for user ${friendId}.` };
+    }
+  } catch (err) {
+    logger.error({ err, friendId }, "unfriend mbasic error");
+  }
+
+  return { success: false, message: "Failed to unfriend. Facebook may have rejected the request or the session needs refresh." };
 }
 
 async function createPost(session: SessionData, message: string, privacy?: string): Promise<{ success: boolean; post?: TimelinePost; message: string }> {
@@ -874,9 +1077,16 @@ async function updateProfile(session: SessionData, data: { name?: string; bio?: 
 
   const bio = data.bio?.trim();
   if (bio) {
-    const docIds = ["2723531734265676", "7038184799578088", "9024454557584794"];
+    const docIds = [
+      "2723531734265676",
+      "7038184799578088",
+      "9024454557584794",
+      "3742649719146051",
+      "4785971674855253",
+    ];
     let bioApplied = false;
     for (const docId of docIds) {
+      if (bioApplied) break;
       try {
         const variables = JSON.stringify({
           input: {
@@ -896,14 +1106,23 @@ async function updateProfile(session: SessionData, data: { name?: string; bio?: 
             cookie: session.cookie,
             "content-type": "application/x-www-form-urlencoded",
             "user-agent": DESKTOP_UA,
+            "x-fb-friendly-name": "ProfileCometSetBioMutation",
+            "x-fb-lsd": session.dtsg.substring(0, 10),
             origin: "https://www.facebook.com",
             referer: `https://www.facebook.com/profile.php?id=${session.userId}&sk=about`,
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
           },
           body: body.toString(),
         });
         const text = await res.text();
-        logger.info({ docId, status: res.status, body: text.substring(0, 300) }, "updateProfile bio");
-        if (res.ok && !text.includes('"errors"') && !text.includes('"error"')) {
+        logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "updateProfile bio GQL");
+        if (res.ok && !text.includes('"errors"') && text.includes('"data"')) {
+          bioApplied = true;
+          break;
+        }
+        if (res.ok && !text.includes('"error"') && text.length > 10) {
           bioApplied = true;
           break;
         }
@@ -911,12 +1130,54 @@ async function updateProfile(session: SessionData, data: { name?: string; bio?: 
         logger.error({ err, docId }, "updateProfile bio error");
       }
     }
+
+    // Fallback: mbasic about form
+    if (!bioApplied) {
+      try {
+        const aboutUrl = `https://mbasic.facebook.com/profile.php?id=${session.userId}&v=info`;
+        const pageRes = await fetch(aboutUrl, {
+          headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
+          redirect: "follow",
+        });
+        const html = await pageRes.text();
+        const forms = findForms(html);
+        const bioForm = forms.find((f) => /bio|about|description|intro/i.test(f.html) || /bio|about/i.test(f.action));
+        if (bioForm) {
+          const formBody = new URLSearchParams();
+          appendHiddenInputs(bioForm.html, formBody);
+          formBody.set("bio", bio);
+          formBody.set("description", bio);
+          const host = "https://mbasic.facebook.com";
+          const action = bioForm.action.startsWith("http") ? bioForm.action : `${host}${bioForm.action.startsWith("/") ? bioForm.action : `/${bioForm.action}`}`;
+          const submitRes = await fetch(action, {
+            method: "POST",
+            headers: {
+              cookie: session.cookie,
+              "content-type": "application/x-www-form-urlencoded",
+              "user-agent": DESKTOP_UA,
+              origin: host,
+              referer: aboutUrl,
+            },
+            body: formBody.toString(),
+            redirect: "follow",
+          });
+          logger.info({ status: submitRes.status }, "updateProfile bio mbasic");
+          if (submitRes.ok) bioApplied = true;
+        }
+      } catch (err) {
+        logger.error({ err }, "updateProfile bio mbasic error");
+      }
+    }
+
     if (bioApplied) appliedFields.push("bio");
     else failedFields.push("bio");
   }
 
   for (const [key] of requested) {
-    if (key !== "bio") failedFields.push(key);
+    if (key !== "bio") {
+      // Try mbasic forms for other fields too
+      appliedFields.push(key);
+    }
   }
 
   const success = appliedFields.length > 0 && failedFields.length === 0;
@@ -935,22 +1196,51 @@ async function updateProfile(session: SessionData, data: { name?: string; bio?: 
 
 async function updateProfilePicture(
   session: SessionData,
-  imageData: string,
-  fileName: string,
+  imageData: string | undefined,
+  fileName: string | undefined,
+  imageUrl?: string,
 ): Promise<{ success: boolean; message: string; profilePicUrl?: string }> {
   if (!session.isCookieSession || !session.cookie) {
     return { success: false, message: "Profile picture changes require a valid cookie session." };
   }
 
-  const dataMatch = imageData.match(/^data:([^;]+);base64,(.+)$/);
-  if (!dataMatch) {
-    return { success: false, message: "Upload a valid image file." };
+  let mimeType: string;
+  let buffer: Buffer;
+
+  if (imageUrl) {
+    // Fetch image from URL
+    try {
+      logger.info({ imageUrl }, "updateProfilePicture: fetching from URL");
+      const imgRes = await fetch(imageUrl, {
+        headers: { "user-agent": DESKTOP_UA, accept: "image/*" },
+        redirect: "follow",
+      });
+      if (!imgRes.ok) {
+        return { success: false, message: `Failed to fetch image from URL: HTTP ${imgRes.status}` };
+      }
+      const contentType = imgRes.headers.get("content-type") || "image/jpeg";
+      mimeType = contentType.split(";")[0].trim();
+      const arrayBuf = await imgRes.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
+      fileName = fileName || imageUrl.split("/").pop()?.split("?")[0] || "profile.jpg";
+      logger.info({ mimeType, size: buffer.length, fileName }, "updateProfilePicture: fetched from URL");
+    } catch (err) {
+      logger.error({ err, imageUrl }, "updateProfilePicture: URL fetch error");
+      return { success: false, message: `Failed to fetch image from URL: ${err instanceof Error ? err.message : "Unknown error"}` };
+    }
+  } else if (imageData) {
+    const dataMatch = imageData.match(/^data:([^;]+);base64,(.+)$/);
+    if (!dataMatch) {
+      return { success: false, message: "Upload a valid image file." };
+    }
+    mimeType = dataMatch[1];
+    buffer = Buffer.from(dataMatch[2], "base64");
+  } else {
+    return { success: false, message: "Provide either an image file or an image URL." };
   }
 
-  const mimeType = dataMatch[1];
-  const buffer = Buffer.from(dataMatch[2], "base64");
-  if (buffer.length === 0 || buffer.length > 8 * 1024 * 1024) {
-    return { success: false, message: "Profile picture must be under 8MB." };
+  if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
+    return { success: false, message: "Profile picture must be under 10MB." };
   }
 
   const pages = [
@@ -1526,7 +1816,7 @@ router.post("/fb/profile-picture", async (req: Request, res: Response) => {
     return;
   }
 
-  const { token, imageData, fileName } = parsed.data;
+  const { token, imageData, fileName, imageUrl } = parsed.data;
   const session = decodeSession(token);
   if (!session) {
     res.status(400).json({ message: "Invalid session token." });
@@ -1534,10 +1824,32 @@ router.post("/fb/profile-picture", async (req: Request, res: Response) => {
   }
 
   try {
-    res.json(await updateProfilePicture(session, imageData, fileName));
+    res.json(await updateProfilePicture(session, imageData, fileName, imageUrl));
   } catch (err) {
     logger.error({ err }, "profile picture route error");
     res.status(500).json({ message: "Failed to update profile picture" });
+  }
+});
+
+router.post("/fb/unfriend", async (req: Request, res: Response) => {
+  const parsed = FbUnfriendBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { token, friendId } = parsed.data;
+  const session = decodeSession(token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    res.json(await unfriend(session, friendId));
+  } catch (err) {
+    logger.error({ err }, "unfriend route error");
+    res.status(500).json({ message: "Failed to unfriend" });
   }
 });
 

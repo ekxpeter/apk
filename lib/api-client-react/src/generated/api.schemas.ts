@@ -104,8 +104,19 @@ export interface FbUpdateProfileResponse {
 
 export interface FbUpdateProfilePictureRequest {
   token: string;
-  imageData: string;
-  fileName: string;
+  imageData?: string;
+  imageUrl?: string;
+  fileName?: string;
+}
+
+export interface FbUnfriendRequest {
+  token: string;
+  friendId: string;
+}
+
+export interface FbUnfriendResponse {
+  success: boolean;
+  message: string;
 }
 
 export interface FbUpdateProfilePictureResponse {

@@ -31,6 +31,8 @@ import type {
   FbPostsResponse,
   FbProfileResponse,
   FbTokenRequest,
+  FbUnfriendRequest,
+  FbUnfriendResponse,
   FbUpdateProfilePictureRequest,
   FbUpdateProfilePictureResponse,
   FbUpdateProfileRequest,
@@ -1072,4 +1074,86 @@ export const useFbGetVideos = <
   TContext
 > => {
   return useMutation(getFbGetVideosMutationOptions(options));
+};
+
+/**
+ * @summary Unfriend a Facebook friend
+ */
+export const getFbUnfriendUrl = () => {
+  return `/api/fb/unfriend`;
+};
+
+export const fbUnfriend = async (
+  fbUnfriendRequest: FbUnfriendRequest,
+  options?: RequestInit,
+): Promise<FbUnfriendResponse> => {
+  return customFetch<FbUnfriendResponse>(getFbUnfriendUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbUnfriendRequest),
+  });
+};
+
+export const getFbUnfriendMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUnfriend>>,
+    TError,
+    { data: BodyType<FbUnfriendRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbUnfriend>>,
+  TError,
+  { data: BodyType<FbUnfriendRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbUnfriend"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbUnfriend>>,
+    { data: BodyType<FbUnfriendRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+    return fbUnfriend(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbUnfriendMutationResult = NonNullable<
+  Awaited<ReturnType<typeof fbUnfriend>>
+>;
+export type FbUnfriendMutationBody = BodyType<FbUnfriendRequest>;
+export type FbUnfriendMutationError = ErrorType<ErrorResponse>;
+
+export const useFbUnfriend = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbUnfriend>>,
+    TError,
+    { data: BodyType<FbUnfriendRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbUnfriend>>,
+  TError,
+  { data: BodyType<FbUnfriendRequest> },
+  TContext
+> => {
+  return useMutation(getFbUnfriendMutationOptions(options));
 };
