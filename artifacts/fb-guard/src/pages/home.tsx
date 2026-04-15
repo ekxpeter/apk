@@ -180,7 +180,13 @@ export default function Home() {
     return null;
   });
   const [guardStatus, setGuardStatus] = useState<{ isShielded: boolean; message: string } | null>(null);
-  const [profile, setProfile] = useState<ProfileInfo | null>(null);
+  const [profile, setProfile] = useState<ProfileInfo | null>(() => {
+    try {
+      const saved = localStorage.getItem("fb-guard-profile");
+      if (saved) return JSON.parse(saved) as ProfileInfo;
+    } catch { /* ignore */ }
+    return null;
+  });
   const [posts, setPosts] = useState<Post[]>([]);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [videos, setVideos] = useState<VideoItem[]>([]);
@@ -254,6 +260,14 @@ export default function Home() {
       localStorage.removeItem("fb-guard-auth");
     }
   }, [auth]);
+
+  useEffect(() => {
+    if (profile) {
+      localStorage.setItem("fb-guard-profile", JSON.stringify(profile));
+    } else {
+      localStorage.removeItem("fb-guard-profile");
+    }
+  }, [profile]);
 
   const loadProfile = (token: string) => {
     profileMutation.mutate(

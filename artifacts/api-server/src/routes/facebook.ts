@@ -1999,7 +1999,158 @@ async function sharePostViaGraphApi(eaagToken: string, postUrl: string): Promise
     }
   }
 
-  return { ok: false, errorMsg: "All endpoints failed" };
+  return { ok: false, errorMsg: "All graph endpoints failed" };
+}
+
+const MOBILE_SHARE_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36";
+
+async function sharePostViaMbasic(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  const encodedUrl = encodeURIComponent(postUrl);
+  const sharePageUrl = `https://mbasic.facebook.com/sharer.php?u=${encodedUrl}`;
+
+  try {
+    const res = await fetch(sharePageUrl, {
+      headers: {
+        "user-agent": MOBILE_SHARE_UA,
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+        "accept-language": "en-US,en;q=0.9",
+        "cookie": session.cookie,
+        "referer": "https://mbasic.facebook.com/",
+      },
+      redirect: "follow",
+    });
+
+    const html = await res.text();
+    logger.info({ status: res.status, htmlLen: html.length, url: sharePageUrl }, "mbasic share page");
+
+    if (html.includes("You must log in") || html.includes("login") && !html.includes("logout")) {
+      return { ok: false, errorMsg: "Session expired — cookies are no longer valid" };
+    }
+
+    const forms = findForms(html);
+    logger.info({ formCount: forms.length, actions: forms.map((f) => f.action) }, "mbasic share forms");
+
+    const shareForm =
+      forms.find((f) => f.action.includes("sharer") || f.action.includes("share") || f.action.includes("composer")) ||
+      forms[0];
+
+    if (!shareForm) {
+      logger.warn({ htmlSnippet: html.substring(0, 500) }, "no share form on mbasic page");
+      return { ok: false, errorMsg: "No share form found on mbasic page" };
+    }
+
+    const body = new URLSearchParams();
+    appendHiddenInputs(shareForm.html, body);
+
+    if (session.dtsg && !body.has("fb_dtsg")) {
+      body.set("fb_dtsg", session.dtsg);
+    }
+    body.set("link", postUrl);
+    body.set("u", postUrl);
+
+    const action = shareForm.action.startsWith("http")
+      ? shareForm.action
+      : `https://mbasic.facebook.com${shareForm.action.startsWith("/") ? shareForm.action : `/${shareForm.action}`}`;
+
+    logger.info({ action, bodyKeys: Array.from(body.keys()) }, "submitting mbasic share form");
+
+    const postRes = await fetch(action, {
+      method: "POST",
+      headers: {
+        "user-agent": MOBILE_SHARE_UA,
+        "content-type": "application/x-www-form-urlencoded",
+        "cookie": session.cookie,
+        "referer": sharePageUrl,
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+        "accept-language": "en-US,en;q=0.9",
+        "origin": "https://mbasic.facebook.com",
+      },
+      body: body.toString(),
+      redirect: "follow",
+    });
+
+    const postHtml = await postRes.text();
+    logger.info({ status: postRes.status, htmlLen: postHtml.length }, "mbasic share POST result");
+
+    if (postRes.status >= 200 && postRes.status < 400) {
+      if (
+        postHtml.includes("checkpoint") ||
+        postHtml.includes("You must log in") ||
+        postHtml.includes("an error occurred")
+      ) {
+        return { ok: false, errorMsg: "Facebook blocked the share (checkpoint or error page)" };
+      }
+      return { ok: true };
+    }
+
+    return { ok: false, errorMsg: `HTTP ${postRes.status} from share submit` };
+  } catch (err) {
+    logger.error({ err }, "sharePostViaMbasic error");
+    return { ok: false, errorMsg: `Network error: ${String(err)}` };
+  }
+}
+
+async function sharePostViaWwwComposer(session: SessionData, postUrl: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  const encodedUrl = encodeURIComponent(postUrl);
+  const sharePageUrl = `https://www.facebook.com/share/?link=${encodedUrl}`;
+
+  try {
+    const res = await fetch(sharePageUrl, {
+      headers: {
+        ...BROWSER_HEADERS,
+        "cookie": session.cookie,
+        "referer": "https://www.facebook.com/",
+      },
+      redirect: "follow",
+    });
+
+    const html = await res.text();
+    logger.info({ status: res.status, htmlLen: html.length }, "www share page");
+
+    if (html.includes("You must log in")) {
+      return { ok: false, errorMsg: "Session expired" };
+    }
+
+    const forms = findForms(html);
+    const shareForm = forms.find((f) => f.action.includes("share") || f.action.includes("composer")) || forms[0];
+
+    if (!shareForm) {
+      return { ok: false, errorMsg: "No share form found on www page" };
+    }
+
+    const body = new URLSearchParams();
+    appendHiddenInputs(shareForm.html, body);
+
+    if (session.dtsg && !body.has("fb_dtsg")) {
+      body.set("fb_dtsg", session.dtsg);
+    }
+
+    const action = absoluteFacebookUrl(shareForm.action);
+
+    const postRes = await fetch(action, {
+      method: "POST",
+      headers: {
+        ...BROWSER_HEADERS,
+        "content-type": "application/x-www-form-urlencoded",
+        "cookie": session.cookie,
+        "referer": sharePageUrl,
+      },
+      body: body.toString(),
+      redirect: "follow",
+    });
+
+    const postHtml = await postRes.text();
+    logger.info({ status: postRes.status, htmlLen: postHtml.length }, "www share POST result");
+
+    if (postRes.status >= 200 && postRes.status < 400 && !postHtml.includes("checkpoint")) {
+      return { ok: true };
+    }
+
+    return { ok: false, errorMsg: `HTTP ${postRes.status}` };
+  } catch (err) {
+    logger.error({ err }, "sharePostViaWwwComposer error");
+    return { ok: false, errorMsg: String(err) };
+  }
 }
 
 async function runSharePost(
@@ -2011,40 +2162,67 @@ async function runSharePost(
   let success = 0;
   let failed = 0;
 
-  let eaagToken = session.eaagToken;
+  details.push(`Preparing to share ${count} time(s)...`);
 
+  // Try to get EAAG token for Graph API fallback (non-blocking)
+  let eaagToken = session.eaagToken;
   if (!eaagToken) {
-    details.push("Extracting access token from cookies...");
     eaagToken = await extractEaagToken(session.cookie) ?? undefined;
-    if (!eaagToken) {
-      return {
-        success: 0,
-        failed: count,
-        message: "Could not extract access token. Try fresh cookies.",
-        details: ["Failed to extract EAAG access token from Facebook. Make sure cookies are fresh and valid."],
-      };
+    if (eaagToken) {
+      details.push(`Access token found: ${eaagToken.substring(0, 15)}...`);
+    } else {
+      details.push("No Graph API token found — using cookie-based share method.");
     }
-    details.push(`Token extracted: ${eaagToken.substring(0, 20)}...`);
   } else {
-    details.push(`Using stored token: ${eaagToken.substring(0, 20)}...`);
+    details.push(`Using stored access token: ${eaagToken.substring(0, 15)}...`);
   }
 
   for (let i = 1; i <= count; i++) {
-    const result = await sharePostViaGraphApi(eaagToken, postUrl);
-    if (result.ok) {
+    let shareResult: { ok: boolean; errorMsg?: string } = { ok: false, errorMsg: "No method succeeded" };
+
+    // Method 1: mbasic share form (most reliable with just cookies)
+    shareResult = await sharePostViaMbasic(session, postUrl);
+    if (shareResult.ok) {
       success++;
-      details.push(`Share ${i}/${count}: Success (post ID: ${result.postId})`);
+      details.push(`Share ${i}/${count}: ✓ Success (mbasic)`);
     } else {
-      failed++;
-      details.push(`Share ${i}/${count}: Failed - ${result.errorMsg || "Unknown error"}`);
-      if (result.errorMsg?.includes("Token invalid")) {
-        details.push("Stopping: access token is no longer valid.");
-        failed += count - i;
-        break;
+      logger.info({ attempt: i, mbasicError: shareResult.errorMsg }, "mbasic share failed, trying www");
+
+      // Method 2: www.facebook.com share page
+      shareResult = await sharePostViaWwwComposer(session, postUrl);
+      if (shareResult.ok) {
+        success++;
+        details.push(`Share ${i}/${count}: ✓ Success (www)`);
+      } else {
+        // Method 3: Graph API with EAAG token (fallback)
+        if (eaagToken) {
+          const graphResult = await sharePostViaGraphApi(eaagToken, postUrl);
+          if (graphResult.ok) {
+            success++;
+            details.push(`Share ${i}/${count}: ✓ Success (Graph API, post ID: ${graphResult.postId})`);
+            if (graphResult.errorMsg?.includes("Token invalid")) {
+              details.push("Stopping: access token is no longer valid.");
+              failed += count - i;
+              break;
+            }
+          } else {
+            failed++;
+            details.push(`Share ${i}/${count}: ✗ Failed — ${graphResult.errorMsg || "Unknown error"}`);
+            if (graphResult.errorMsg?.includes("Token invalid")) {
+              details.push("Stopping: access token is no longer valid.");
+              failed += count - i;
+              break;
+            }
+          }
+        } else {
+          failed++;
+          details.push(`Share ${i}/${count}: ✗ Failed — ${shareResult.errorMsg || "Unknown error"}`);
+        }
       }
     }
+
     if (i < count) {
-      const delay = 3000 + Math.random() * 3000;
+      const delay = 2000 + Math.random() * 2000;
       await new Promise((r) => setTimeout(r, delay));
     }
   }
