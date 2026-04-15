@@ -215,3 +215,19 @@ export const FbUnfriendResponse = zod.object({
   success: zod.boolean(),
   message: zod.string(),
 });
+
+/**
+ * @summary Share a Facebook post multiple times
+ */
+export const FbSharePostBody = zod.object({
+  token: zod.string(),
+  postUrl: zod.string(),
+  count: zod.number().min(1).max(100),
+});
+
+export const FbSharePostResponse = zod.object({
+  success: zod.number(),
+  failed: zod.number(),
+  message: zod.string(),
+  details: zod.array(zod.string()),
+});

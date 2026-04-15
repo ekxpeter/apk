@@ -25,6 +25,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  Share2,
   Shield,
   ShieldCheck,
   ShieldOff,
@@ -45,6 +46,7 @@ import {
   useFbGetVideos,
   useFbLogin,
   useFbLoginCookie,
+  useFbSharePost,
   useFbToggleGuard,
   useFbUnfriend,
   useFbUpdateProfile,
@@ -170,7 +172,13 @@ function fileToDataUrl(file: File): Promise<string> {
 }
 
 export default function Home() {
-  const [auth, setAuth] = useState<AuthState>(null);
+  const [auth, setAuth] = useState<AuthState>(() => {
+    try {
+      const saved = localStorage.getItem("fb-guard-auth");
+      if (saved) return JSON.parse(saved) as AuthState;
+    } catch { /* ignore */ }
+    return null;
+  });
   const [guardStatus, setGuardStatus] = useState<{ isShielded: boolean; message: string } | null>(null);
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -184,6 +192,10 @@ export default function Home() {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("fb-guard-theme") === "dark");
   const [unfriendingIds, setUnfriendingIds] = useState<Set<string>>(new Set());
   const [pfpMode, setPfpMode] = useState<"file" | "url">("file");
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareCount, setShareCount] = useState(10);
+  const [shareLogs, setShareLogs] = useState<string[]>([]);
+  const [shareResult, setShareResult] = useState<{ success: number; failed: number; message: string } | null>(null);
   const { toast } = useToast();
 
   const loginMutation = useFbLogin();
@@ -198,6 +210,7 @@ export default function Home() {
   const updateProfilePictureMutation = useFbUpdateProfilePicture();
   const createPostMutation = useFbCreatePost();
   const videosMutation = useFbGetVideos();
+  const sharePostMutation = useFbSharePost();
 
   const emailForm = useForm<z.infer<typeof emailLoginSchema>>({
     resolver: zodResolver(emailLoginSchema),
@@ -233,6 +246,14 @@ export default function Home() {
     document.documentElement.classList.toggle("dark", darkMode);
     localStorage.setItem("fb-guard-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  useEffect(() => {
+    if (auth) {
+      localStorage.setItem("fb-guard-auth", JSON.stringify(auth));
+    } else {
+      localStorage.removeItem("fb-guard-auth");
+    }
+  }, [auth]);
 
   const loadProfile = (token: string) => {
     profileMutation.mutate(
@@ -519,8 +540,35 @@ export default function Home() {
     );
   };
 
+  const handleShare = () => {
+    if (!auth || !shareUrl.trim()) return;
+    const url = shareUrl.trim();
+    const cnt = Math.max(1, Math.min(100, shareCount));
+    setShareLogs(["Starting share process..."]);
+    setShareResult(null);
+    sharePostMutation.mutate(
+      { data: { token: auth.token, postUrl: url, count: cnt } },
+      {
+        onSuccess: (result) => {
+          setShareLogs(result.details);
+          setShareResult({ success: result.success, failed: result.failed, message: result.message });
+          toast({
+            title: result.success > 0 ? "Shares completed" : "All shares failed",
+            description: result.message,
+            variant: result.success > 0 ? "default" : "destructive",
+          });
+        },
+        onError: (err) => {
+          setShareLogs(["Error: " + (err.message || "Unknown error")]);
+          toast({ variant: "destructive", title: "Share failed", description: err.message || "Could not share post." });
+        },
+      }
+    );
+  };
+
   const handleLogout = () => {
     setAuth(null);
+    localStorage.removeItem("fb-guard-auth");
     setGuardStatus(null);
     setProfile(null);
     setPosts([]);
@@ -529,6 +577,9 @@ export default function Home() {
     setActiveVideoId(null);
     setSelectedPosts(new Set());
     setImgError(false);
+    setShareLogs([]);
+    setShareResult(null);
+    setShareUrl("");
     emailForm.reset();
     cookieForm.reset();
     profileForm.reset();
@@ -864,8 +915,11 @@ export default function Home() {
             )}
           </div>
 
-          <Tabs defaultValue="feed" className="space-y-4">
-            <TabsList className="grid h-auto grid-cols-5 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
+          <Tabs defaultValue="share" className="space-y-4">
+            <TabsList className="grid h-auto grid-cols-6 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
+              <TabsTrigger value="share" className="rounded-2xl">
+                <Share2 className="mr-1 h-4 w-4" /> Share
+              </TabsTrigger>
               <TabsTrigger value="feed" className="rounded-2xl">
                 <FileText className="mr-1 h-4 w-4" /> Posts
               </TabsTrigger>
@@ -882,6 +936,115 @@ export default function Home() {
                 <Shield className="mr-1 h-4 w-4" /> All
               </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="share" className="space-y-4">
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <h3 className="mb-1 flex items-center gap-2 font-semibold">
+                    <Share2 className="h-5 w-5 text-[#1877F2]" /> Share Post
+                  </h3>
+                  <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+                    Share any Facebook post link multiple times using your account.
+                  </p>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Post URL
+                      </label>
+                      <Input
+                        value={shareUrl}
+                        onChange={(e) => setShareUrl(e.target.value)}
+                        placeholder="https://www.facebook.com/.../posts/..."
+                        className="h-11 rounded-2xl"
+                        disabled={sharePostMutation.isPending}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Number of Shares (1–100)
+                      </label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={shareCount}
+                        onChange={(e) => setShareCount(Number(e.target.value))}
+                        className="h-11 rounded-2xl"
+                        disabled={sharePostMutation.isPending}
+                      />
+                    </div>
+
+                    <Button
+                      onClick={handleShare}
+                      disabled={sharePostMutation.isPending || !shareUrl.trim()}
+                      className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
+                    >
+                      {sharePostMutation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                          Sharing... (this takes time, please wait)
+                        </>
+                      ) : (
+                        <>
+                          <Share2 className="mr-2 h-5 w-5" />
+                          Share {shareCount} Time{shareCount !== 1 ? "s" : ""}
+                        </>
+                      )}
+                    </Button>
+
+                    {shareResult && (
+                      <div
+                        className={`rounded-2xl border p-4 text-sm ${
+                          shareResult.failed === 0
+                            ? "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300"
+                            : shareResult.success === 0
+                            ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+                            : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                        }`}
+                      >
+                        <div className="font-semibold">{shareResult.message}</div>
+                        <div className="mt-1 text-xs">
+                          {shareResult.success} succeeded · {shareResult.failed} failed
+                        </div>
+                      </div>
+                    )}
+
+                    {shareLogs.length > 0 && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 dark:border-slate-700">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Share Log
+                        </p>
+                        <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
+                          {shareLogs.map((log, i) => (
+                            <div
+                              key={i}
+                              className={
+                                log.includes("Success")
+                                  ? "text-green-400"
+                                  : log.includes("Failed") || log.includes("Error") || log.includes("Stopping") || log.includes("failed")
+                                  ? "text-red-400"
+                                  : log.includes("Token") || log.includes("token")
+                                  ? "text-yellow-400"
+                                  : "text-slate-300"
+                              }
+                            >
+                              {log}
+                            </div>
+                          ))}
+                          {sharePostMutation.isPending && (
+                            <div className="flex items-center gap-1 text-[#1877F2]">
+                              <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
             <TabsContent value="feed" className="space-y-4">
               <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">

@@ -30,6 +30,8 @@ import type {
   FbLoginResponse,
   FbPostsResponse,
   FbProfileResponse,
+  FbSharePostRequest,
+  FbSharePostResponse,
   FbTokenRequest,
   FbUnfriendRequest,
   FbUnfriendResponse,
@@ -1156,4 +1158,81 @@ export const useFbUnfriend = <
   TContext
 > => {
   return useMutation(getFbUnfriendMutationOptions(options));
+};
+
+export const getFbSharePostUrl = () => {
+  return `/api/fb/share`;
+};
+
+export const fbSharePost = async (
+  fbSharePostRequest: FbSharePostRequest,
+  options?: RequestInit,
+): Promise<FbSharePostResponse> => {
+  return customFetch<FbSharePostResponse>(getFbSharePostUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(fbSharePostRequest),
+  });
+};
+
+export const getFbSharePostMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbSharePost>>,
+    TError,
+    { data: BodyType<FbSharePostRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof fbSharePost>>,
+  TError,
+  { data: BodyType<FbSharePostRequest> },
+  TContext
+> => {
+  const mutationKey = ["fbSharePost"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof fbSharePost>>,
+    { data: BodyType<FbSharePostRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+    return fbSharePost(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FbSharePostMutationResult = NonNullable<Awaited<ReturnType<typeof fbSharePost>>>;
+export type FbSharePostMutationBody = BodyType<FbSharePostRequest>;
+export type FbSharePostMutationError = ErrorType<ErrorResponse>;
+
+export const useFbSharePost = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof fbSharePost>>,
+    TError,
+    { data: BodyType<FbSharePostRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof fbSharePost>>,
+  TError,
+  { data: BodyType<FbSharePostRequest> },
+  TContext
+> => {
+  return useMutation(getFbSharePostMutationOptions(options));
 };

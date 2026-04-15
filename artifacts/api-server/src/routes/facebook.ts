@@ -8,6 +8,7 @@ import {
   FbGetVideosBody,
   FbLoginBody,
   FbLoginCookieBody,
+  FbSharePostBody,
   FbToggleGuardBody,
   FbUnfriendBody,
   FbUpdateProfileBody,
@@ -47,6 +48,7 @@ interface SessionData {
   isCookieSession: boolean;
   accessToken?: string;
   lsd?: string;
+  eaagToken?: string;
 }
 
 type Friend = { id: string; name: string; profileUrl: string; pictureUrl: string };
@@ -1894,6 +1896,187 @@ router.post("/fb/videos", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "videos route error");
     res.status(500).json({ message: "Failed to fetch videos" });
+  }
+});
+
+const UA_LIST = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.196 Mobile Safari/537.36",
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
+];
+
+async function extractEaagToken(rawCookie: string): Promise<string | null> {
+  const ua = UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
+  const urlsToTry = [
+    "https://business.facebook.com/business_locations",
+    "https://business.facebook.com/settings/",
+    "https://www.facebook.com/settings?tab=security",
+    "https://www.facebook.com/",
+  ];
+
+  for (const url of urlsToTry) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "user-agent": ua,
+          "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+          "accept-language": "en-US,en;q=0.9",
+          "referer": "https://www.facebook.com/",
+          "cookie": rawCookie,
+        },
+        redirect: "follow",
+      });
+
+      const text = await res.text();
+      const patterns = [
+        /"token":"(EAAG[^"]+)"/,
+        /"accessToken":"(EAAG[^"]+)"/,
+        /(EAAG[^\s"]{80,})/,
+        /"(EAAG[^"]{80,})"/,
+        /access_token=(EAAG[^&"'\s]+)/,
+      ];
+
+      for (const pat of patterns) {
+        const m = text.match(pat);
+        if (m) {
+          const token = m[1];
+          logger.info({ url, tokenPrefix: token.substring(0, 25) }, "Found EAAG token");
+          return token;
+        }
+      }
+    } catch (err) {
+      logger.error({ err, url }, "extractEaagToken fetch error");
+    }
+  }
+
+  return null;
+}
+
+async function sharePostViaGraphApi(eaagToken: string, postUrl: string): Promise<{ ok: boolean; postId?: string; errorMsg?: string }> {
+  const endpoints = [
+    "https://graph.facebook.com/v18.0/me/feed",
+    "https://graph.facebook.com/v17.0/me/feed",
+    "https://graph.facebook.com/v16.0/me/feed",
+    "https://graph.facebook.com/me/feed",
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const params = new URLSearchParams({
+        access_token: eaagToken,
+        message: "",
+        link: postUrl,
+      });
+
+      const res = await fetch(`${endpoint}?${params.toString()}`, {
+        method: "POST",
+        headers: {
+          "user-agent": UA_LIST[0],
+          "accept": "application/json",
+        },
+      });
+
+      const text = await res.text();
+      logger.info({ endpoint, status: res.status, body: text.substring(0, 300) }, "sharePost graph response");
+
+      let result: Record<string, unknown> = {};
+      try { result = JSON.parse(text); } catch { /* not json */ }
+
+      if (result.id) {
+        return { ok: true, postId: String(result.id) };
+      }
+      if (result.error) {
+        const err = result.error as { code?: number; message?: string };
+        const msg = err.message || "Graph API error";
+        logger.warn({ error: result.error, endpoint }, "Graph API share error");
+        if (err.code === 190 || err.code === 102 || err.code === 2500) {
+          return { ok: false, errorMsg: `Token invalid: ${msg}` };
+        }
+        return { ok: false, errorMsg: msg };
+      }
+    } catch (err) {
+      logger.error({ err, endpoint }, "sharePostViaGraphApi endpoint error");
+    }
+  }
+
+  return { ok: false, errorMsg: "All endpoints failed" };
+}
+
+async function runSharePost(
+  session: SessionData,
+  postUrl: string,
+  count: number
+): Promise<{ success: number; failed: number; message: string; details: string[] }> {
+  const details: string[] = [];
+  let success = 0;
+  let failed = 0;
+
+  let eaagToken = session.eaagToken;
+
+  if (!eaagToken) {
+    details.push("Extracting access token from cookies...");
+    eaagToken = await extractEaagToken(session.cookie) ?? undefined;
+    if (!eaagToken) {
+      return {
+        success: 0,
+        failed: count,
+        message: "Could not extract access token. Try fresh cookies.",
+        details: ["Failed to extract EAAG access token from Facebook. Make sure cookies are fresh and valid."],
+      };
+    }
+    details.push(`Token extracted: ${eaagToken.substring(0, 20)}...`);
+  } else {
+    details.push(`Using stored token: ${eaagToken.substring(0, 20)}...`);
+  }
+
+  for (let i = 1; i <= count; i++) {
+    const result = await sharePostViaGraphApi(eaagToken, postUrl);
+    if (result.ok) {
+      success++;
+      details.push(`Share ${i}/${count}: Success (post ID: ${result.postId})`);
+    } else {
+      failed++;
+      details.push(`Share ${i}/${count}: Failed - ${result.errorMsg || "Unknown error"}`);
+      if (result.errorMsg?.includes("Token invalid")) {
+        details.push("Stopping: access token is no longer valid.");
+        failed += count - i;
+        break;
+      }
+    }
+    if (i < count) {
+      const delay = 3000 + Math.random() * 3000;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  return {
+    success,
+    failed,
+    message: `Shared ${success}/${count} successfully.`,
+    details,
+  };
+}
+
+router.post("/fb/share", async (req: Request, res: Response) => {
+  const parsed = FbSharePostBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { token, postUrl, count } = parsed.data;
+  const session = decodeSession(token);
+  if (!session) {
+    res.status(400).json({ message: "Invalid session token." });
+    return;
+  }
+
+  try {
+    const result = await runSharePost(session, postUrl, count);
+    res.json(result);
+  } catch (err) {
+    logger.error({ err }, "share route error");
+    res.status(500).json({ message: "Failed to share post" });
   }
 });
 

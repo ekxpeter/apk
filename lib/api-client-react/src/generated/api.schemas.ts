@@ -151,6 +151,19 @@ export interface FbVideosResponse {
   message: string;
 }
 
+export interface FbSharePostRequest {
+  token: string;
+  postUrl: string;
+  count: number;
+}
+
+export interface FbSharePostResponse {
+  success: number;
+  failed: number;
+  message: string;
+  details: string[];
+}
+
 export interface ErrorResponse {
   message: string;
 }
