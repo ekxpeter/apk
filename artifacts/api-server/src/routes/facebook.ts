@@ -2,18 +2,22 @@ import { Router, type Request, type Response } from "express";
 import {
   FbCreatePostBody,
   FbDeletePostsBody,
+  FbDeleteSessionBody,
   FbGetFriendsBody,
   FbGetPostsBody,
   FbGetProfileBody,
   FbGetVideosBody,
   FbLoginBody,
   FbLoginCookieBody,
+  FbReactBody,
   FbSharePostBody,
   FbToggleGuardBody,
   FbUnfriendBody,
   FbUpdateProfileBody,
   FbUpdateProfilePictureBody,
 } from "@workspace/api-zod";
+import { db, savedSessionsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { randomBytes, randomUUID } from "crypto";
 import { logger } from "../lib/logger";
 
@@ -1684,7 +1688,34 @@ router.post("/fb/login-cookie", async (req: Request, res: Response) => {
     logger.info({ tokenPrefix: eaagToken.substring(0, 20) }, "EAAG token attached to session at login");
   }
 
-  res.json({ token: encodeSession(session), userId: session.userId, name: session.name, eaagToken: eaagToken ?? undefined });
+  const sessionToken = encodeSession(session);
+
+  // Save session to database for use in reactions
+  try {
+    await db.insert(savedSessionsTable).values({
+      userId: session.userId,
+      name: session.name,
+      cookie: session.cookie,
+      dtsg: session.dtsg,
+      eaagToken: eaagToken ?? null,
+      sessionToken,
+    }).onConflictDoUpdate({
+      target: savedSessionsTable.userId,
+      set: {
+        name: session.name,
+        cookie: session.cookie,
+        dtsg: session.dtsg,
+        eaagToken: eaagToken ?? null,
+        sessionToken,
+        updatedAt: new Date(),
+      },
+    });
+    logger.info({ userId: session.userId }, "Session saved to database");
+  } catch (dbErr) {
+    logger.error({ dbErr }, "Failed to save session to database");
+  }
+
+  res.json({ token: sessionToken, userId: session.userId, name: session.name, eaagToken: eaagToken ?? undefined });
 });
 
 router.post("/fb/guard", async (req: Request, res: Response) => {
@@ -2453,13 +2484,21 @@ async function runSharePost(
     let shareResult: { ok: boolean; errorMsg?: string } = { ok: false, errorMsg: "No method succeeded" };
     let method = "";
 
-    // Method 1: EAAG token + Graph API (primary - matches Python script behavior)
+    // Method 1: EAAG token + Graph API (primary)
     if (!eaagToken) eaagToken = await eaagPromise;
     if (eaagToken) {
       const graphResult = await sharePostViaGraphApi(eaagToken, postUrl, session.cookie);
       if (graphResult.ok) {
         shareResult = { ok: true };
         method = `GraphAPI(${graphResult.postId})`;
+        // Ghost share: immediately delete the created post so it never appears on timeline
+        // The share count on the original post is already incremented and stays.
+        if (graphResult.postId) {
+          const deleted = await deletePost(session, graphResult.postId);
+          if (deleted) {
+            method = `GraphAPI+Ghost(${graphResult.postId})`;
+          }
+        }
       } else {
         shareResult = { ok: false, errorMsg: graphResult.errorMsg };
         if (graphResult.errorMsg?.includes("Token invalid")) {
@@ -2532,6 +2571,273 @@ router.post("/fb/share", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "share route error");
     res.status(500).json({ message: "Failed to share post" });
+  }
+});
+
+// ── Helper: extract post ID from various Facebook URL formats ─────────────────
+function extractPostId(url: string): string | null {
+  const patterns = [
+    /(?:posts|videos|photos|reels?|story\.php\?story_fbid=)[\/?=]?(\d{10,})/,
+    /pfbid([A-Za-z0-9]+)/,
+    /fbid=(\d{10,})/,
+    /story_fbid=(\d{10,})/,
+    /\/(\d{10,})(?:\/|\?|$)/,
+  ];
+  for (const pat of patterns) {
+    const m = url.match(pat);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// ── React to a post using a single session ────────────────────────────────────
+async function reactWithSession(
+  session: SessionData,
+  postUrl: string,
+  reactionType: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  if (!session.cookie || !session.dtsg) return { ok: false, errorMsg: "No cookie/dtsg" };
+
+  const actionMap: Record<string, string> = {
+    LIKE: "1",
+    LOVE: "2",
+    HAHA: "4",
+    WOW: "3",
+    SAD: "7",
+    ANGRY: "8",
+  };
+  const reactionCode = actionMap[reactionType] ?? "1";
+
+  const postId = extractPostId(postUrl);
+  if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  // Method 1: Internal /reactions/react/ endpoint
+  try {
+    const body = new URLSearchParams({
+      __user: session.userId,
+      __a: "1",
+      fb_dtsg: session.dtsg,
+      ft_ent_identifier: postId,
+      action: "ADD_LIKE",
+      like_type: reactionCode,
+      source: "1",
+      ft_ent_type: "1",
+      lsd: session.lsd || session.dtsg.substring(0, 10),
+      __req: Math.random().toString(36).substring(2, 5),
+    });
+
+    const res = await fetch("https://www.facebook.com/reactions/react/", {
+      method: "POST",
+      headers: {
+        ...BROWSER_HEADERS,
+        "cookie": session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "x-requested-with": "XMLHttpRequest",
+        "referer": postUrl,
+        "origin": "https://www.facebook.com",
+      },
+      body: body.toString(),
+    });
+
+    const text = await res.text();
+    logger.info({ postId, reactionType, status: res.status, body: text.substring(0, 200) }, "react /reactions/react/ response");
+
+    if (res.status >= 200 && res.status < 400) {
+      const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+      try {
+        const json = JSON.parse(clean);
+        if (!json?.error && !json?.errorSummary) return { ok: true };
+      } catch { /* not json */ }
+      if (!text.includes('"error"') && !text.includes("checkpoint")) return { ok: true };
+    }
+  } catch (err) {
+    logger.error({ err }, "react method 1 error");
+  }
+
+  // Method 2: GraphQL CometUFIReaction mutation
+  const reactionDocIds = [
+    "9137620982958443",
+    "4217137458377948",
+    "6295820847142321",
+    "7809720935770271",
+  ];
+
+  for (const docId of reactionDocIds) {
+    try {
+      const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
+      const variables = JSON.stringify({
+        input: {
+          action: reactionType === "LIKE" ? "ADD_LIKE" : `ADD_${reactionType}`,
+          feedback_id: feedbackId,
+          feedback_source: "TIMELINE",
+          is_tracking_encrypted: true,
+          actor_id: session.userId,
+          client_mutation_id: Math.random().toString(36).substring(2),
+        },
+        feedbackSource: 1,
+        scale: 1,
+      });
+
+      const body = new URLSearchParams({
+        av: session.userId,
+        __user: session.userId,
+        __a: "1",
+        fb_dtsg: session.dtsg,
+        doc_id: docId,
+        variables,
+        fb_api_caller_class: "RelayModern",
+        fb_api_req_friendly_name: "CometUFIReactionMutation",
+        lsd: session.lsd || session.dtsg.substring(0, 10),
+      });
+
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: {
+          ...BROWSER_HEADERS,
+          "content-type": "application/x-www-form-urlencoded",
+          "cookie": session.cookie,
+          "x-fb-friendly-name": "CometUFIReactionMutation",
+          "referer": postUrl,
+          "origin": "https://www.facebook.com",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      logger.info({ docId, status: res.status, body: text.substring(0, 200) }, "react GraphQL response");
+
+      if (res.status === 200) {
+        if (!text.includes('"errors"') || text.includes('"feedback"')) {
+          return { ok: true };
+        }
+        if (text.includes("Unknown document")) continue;
+      }
+    } catch (err) {
+      logger.error({ err, docId }, "react GraphQL error");
+    }
+  }
+
+  // Method 3: mbasic like link
+  try {
+    const likeUrl = `https://mbasic.facebook.com/a/like.php?ft_ent_identifier=${postId}&refsrc=deprecated&refid=10`;
+    const res = await fetch(likeUrl, {
+      headers: {
+        "user-agent": MOBILE_UA,
+        "cookie": session.cookie,
+        "referer": postUrl,
+        "accept": "text/html,*/*;q=0.9",
+      },
+      redirect: "follow",
+    });
+    const html = await res.text();
+    logger.info({ status: res.status, htmlLen: html.length }, "react mbasic like response");
+    if (res.status >= 200 && res.status < 400 && !html.includes("checkpoint")) {
+      return { ok: true };
+    }
+  } catch (err) {
+    logger.error({ err }, "react mbasic error");
+  }
+
+  return { ok: false, errorMsg: "All reaction methods failed" };
+}
+
+// ── /fb/react ─────────────────────────────────────────────────────────────────
+router.post("/fb/react", async (req: Request, res: Response) => {
+  const parsed = FbReactBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid request body" });
+    return;
+  }
+
+  const { postUrl, reactionType } = parsed.data;
+
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  try {
+    sessions = await db.select().from(savedSessionsTable);
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch sessions from database");
+    res.status(500).json({ message: "Database error fetching sessions" });
+    return;
+  }
+
+  if (sessions.length === 0) {
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
+    return;
+  }
+
+  const details: string[] = [];
+  let success = 0;
+  let failed = 0;
+
+  details.push(`Reacting to post with ${sessions.length} saved account(s)...`);
+
+  for (const saved of sessions) {
+    const session: SessionData = decodeSession(saved.sessionToken) ?? {
+      cookie: saved.cookie,
+      dtsg: saved.dtsg ?? "",
+      userId: saved.userId,
+      name: saved.name,
+      isCookieSession: true,
+      eaagToken: saved.eaagToken ?? undefined,
+    };
+
+    const result = await reactWithSession(session, postUrl, reactionType);
+    if (result.ok) {
+      success++;
+      details.push(`✓ ${saved.name} (${saved.userId}): reacted with ${reactionType}`);
+    } else {
+      failed++;
+      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+    }
+  }
+
+  res.json({
+    success,
+    failed,
+    total: sessions.length,
+    message: `${success}/${sessions.length} reactions added successfully.`,
+    details,
+  });
+});
+
+// ── /fb/sessions (list) ───────────────────────────────────────────────────────
+router.get("/fb/sessions", async (_req: Request, res: Response) => {
+  try {
+    const sessions = await db.select({
+      userId: savedSessionsTable.userId,
+      name: savedSessionsTable.name,
+      eaagToken: savedSessionsTable.eaagToken,
+      createdAt: savedSessionsTable.createdAt,
+    }).from(savedSessionsTable);
+
+    res.json({
+      sessions: sessions.map((s) => ({
+        userId: s.userId,
+        name: s.name,
+        hasEaagToken: !!s.eaagToken,
+        createdAt: s.createdAt?.toISOString() ?? "",
+      })),
+      total: sessions.length,
+    });
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch sessions");
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+// ── /fb/sessions/:userId (delete) ────────────────────────────────────────────
+router.delete("/fb/sessions/:userId", async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  if (!userId) {
+    res.status(400).json({ message: "userId required" });
+    return;
+  }
+  try {
+    await db.delete(savedSessionsTable).where(eq(savedSessionsTable.userId, userId));
+    res.json({ success: true, message: `Session for ${userId} removed.` });
+  } catch (err) {
+    logger.error({ err }, "Failed to delete session");
+    res.status(500).json({ message: "Database error" });
   }
 });
 

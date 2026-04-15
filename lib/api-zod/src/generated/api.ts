@@ -233,3 +233,46 @@ export const FbSharePostResponse = zod.object({
   message: zod.string(),
   details: zod.array(zod.string()),
 });
+
+/**
+ * @summary React to a Facebook post using all saved sessions
+ */
+export const FbReactBody = zod.object({
+  postUrl: zod.string(),
+  reactionType: zod.enum(["LIKE", "LOVE", "HAHA", "WOW", "SAD", "ANGRY"]).default("LIKE"),
+});
+
+export const FbReactResponse = zod.object({
+  success: zod.number(),
+  failed: zod.number(),
+  total: zod.number(),
+  message: zod.string(),
+  details: zod.array(zod.string()),
+});
+
+/**
+ * @summary Get all saved sessions from database
+ */
+export const FbGetSessionsResponse = zod.object({
+  sessions: zod.array(
+    zod.object({
+      userId: zod.string(),
+      name: zod.string(),
+      hasEaagToken: zod.boolean(),
+      createdAt: zod.string(),
+    }),
+  ),
+  total: zod.number(),
+});
+
+/**
+ * @summary Delete a saved session from database
+ */
+export const FbDeleteSessionBody = zod.object({
+  userId: zod.string(),
+});
+
+export const FbDeleteSessionResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string(),
+});

@@ -1,20 +1,24 @@
-// Export your models here. Add one export per file
-// export * from "./posts";
-//
-// Each model/table should ideally be split into different files.
-// Each model/table should define a Drizzle table, insert schema, and types:
-//
-//   import { pgTable, text, serial } from "drizzle-orm/pg-core";
-//   import { createInsertSchema } from "drizzle-zod";
-//   import { z } from "zod/v4";
-//
-//   export const postsTable = pgTable("posts", {
-//     id: serial("id").primaryKey(),
-//     title: text("title").notNull(),
-//   });
-//
-//   export const insertPostSchema = createInsertSchema(postsTable).omit({ id: true });
-//   export type InsertPost = z.infer<typeof insertPostSchema>;
-//   export type Post = typeof postsTable.$inferSelect;
+import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 
-export {}
+export const savedSessionsTable = pgTable("saved_sessions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull().unique(),
+  name: text("name").notNull(),
+  cookie: text("cookie").notNull(),
+  dtsg: text("dtsg"),
+  eaagToken: text("eaag_token"),
+  sessionToken: text("session_token").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+export const reactionsTable = pgTable("reactions", {
+  id: serial("id").primaryKey(),
+  postUrl: text("post_url").notNull(),
+  userId: text("user_id").notNull(),
+  reactionType: text("reaction_type").notNull().default("LIKE"),
+  reactedAt: timestamp("reacted_at", { withTimezone: true }).defaultNow(),
+});
+
+export type SavedSession = typeof savedSessionsTable.$inferSelect;
+export type InsertSavedSession = typeof savedSessionsTable.$inferInsert;

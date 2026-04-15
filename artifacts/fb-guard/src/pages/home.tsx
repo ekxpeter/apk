@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import {
   ChevronUp,
   Cookie,
   Copy,
+  Database,
   Edit3,
   ExternalLink,
   FileText,
@@ -31,11 +33,13 @@ import {
   ShieldOff,
   Square,
   Sun,
+  ThumbsUp,
   Trash2,
   User,
   UserMinus,
   Users,
   Video,
+  Zap,
 } from "lucide-react";
 import {
   useFbCreatePost,
@@ -203,6 +207,10 @@ export default function Home() {
   const [shareCount, setShareCount] = useState(10);
   const [shareLogs, setShareLogs] = useState<string[]>([]);
   const [shareResult, setShareResult] = useState<{ success: number; failed: number; message: string } | null>(null);
+  const [reactUrl, setReactUrl] = useState("");
+  const [reactType, setReactType] = useState<"LIKE" | "LOVE" | "HAHA" | "WOW" | "SAD" | "ANGRY">("LIKE");
+  const [reactLogs, setReactLogs] = useState<string[]>([]);
+  const [reactResult, setReactResult] = useState<{ success: number; failed: number; total: number; message: string } | null>(null);
   const { toast } = useToast();
 
   const loginMutation = useFbLogin();
@@ -218,6 +226,62 @@ export default function Home() {
   const createPostMutation = useFbCreatePost();
   const videosMutation = useFbGetVideos();
   const sharePostMutation = useFbSharePost();
+
+  const reactMutation = useMutation({
+    mutationFn: async (body: { postUrl: string; reactionType: string }) => {
+      const res = await fetch("/api/fb/react", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<{ success: number; failed: number; total: number; message: string; details: string[] }>;
+    },
+  });
+
+  const sessionsQuery = useQuery({
+    queryKey: ["fb-sessions"],
+    queryFn: async () => {
+      const res = await fetch("/api/fb/sessions");
+      if (!res.ok) throw new Error("Failed to fetch sessions");
+      return res.json() as Promise<{ sessions: Array<{ userId: string; name: string; hasEaagToken: boolean; createdAt: string }>; total: number }>;
+    },
+    refetchInterval: 15000,
+  });
+
+  const deleteSessionMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      const res = await fetch(`/api/fb/sessions/${userId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete session");
+      return res.json();
+    },
+    onSuccess: () => { sessionsQuery.refetch(); toast({ title: "Session removed" }); },
+  });
+
+  const handleReact = useCallback(() => {
+    if (!reactUrl.trim()) return;
+    setReactLogs(["Sending reactions..."]);
+    setReactResult(null);
+    reactMutation.mutate(
+      { postUrl: reactUrl.trim(), reactionType: reactType },
+      {
+        onSuccess: (result) => {
+          setReactLogs(result.details);
+          setReactResult({ success: result.success, failed: result.failed, total: result.total, message: result.message });
+          toast({
+            title: result.success > 0 ? "Reactions done" : "All reactions failed",
+            description: result.message,
+            variant: result.success > 0 ? "default" : "destructive",
+          });
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          setReactLogs([`Error: ${msg}`]);
+          toast({ variant: "destructive", title: "Reaction failed", description: msg });
+        },
+      }
+    );
+  }, [reactUrl, reactType, reactMutation, toast]);
 
   const emailForm = useForm<z.infer<typeof emailLoginSchema>>({
     resolver: zodResolver(emailLoginSchema),
@@ -935,9 +999,12 @@ export default function Home() {
           </div>
 
           <Tabs defaultValue="share" className="space-y-4">
-            <TabsList className="grid h-auto grid-cols-6 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
+            <TabsList className="grid h-auto grid-cols-7 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
               <TabsTrigger value="share" className="rounded-2xl">
                 <Share2 className="mr-1 h-4 w-4" /> Share
+              </TabsTrigger>
+              <TabsTrigger value="react" className="rounded-2xl">
+                <ThumbsUp className="mr-1 h-4 w-4" /> React
               </TabsTrigger>
               <TabsTrigger value="feed" className="rounded-2xl">
                 <FileText className="mr-1 h-4 w-4" /> Posts
@@ -1053,6 +1120,144 @@ export default function Home() {
                             </div>
                           ))}
                           {sharePostMutation.isPending && (
+                            <div className="flex items-center gap-1 text-[#1877F2]">
+                              <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ── REACT TAB ─────────────────────────────────────────────── */}
+            <TabsContent value="react" className="space-y-4">
+              {/* Saved Sessions Card */}
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="flex items-center gap-2 font-semibold">
+                      <Database className="h-5 w-5 text-[#1877F2]" /> Saved Accounts
+                      <span className="rounded-full bg-[#1877F2]/10 px-2 py-0.5 text-xs font-semibold text-[#1877F2]">
+                        {sessionsQuery.data?.total ?? 0} saved
+                      </span>
+                    </h3>
+                    <button
+                      onClick={() => sessionsQuery.refetch()}
+                      className="text-slate-400 hover:text-[#1877F2]"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${sessionsQuery.isFetching ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+                  <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+                    Every cookie that logs in is saved here. Each saved account = 1 reaction.
+                  </p>
+                  {sessionsQuery.data?.sessions.length === 0 && (
+                    <p className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                      No saved accounts yet. Login with cookies to add accounts.
+                    </p>
+                  )}
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {sessionsQuery.data?.sessions.map((s) => (
+                      <div key={s.userId} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-2.5 dark:bg-slate-800">
+                        <div>
+                          <div className="text-sm font-medium">{s.name}</div>
+                          <div className="text-xs text-slate-400">{s.userId} {s.hasEaagToken && <span className="ml-1 text-green-500">· token ✓</span>}</div>
+                        </div>
+                        <button
+                          onClick={() => deleteSessionMutation.mutate(s.userId)}
+                          disabled={deleteSessionMutation.isPending}
+                          className="text-red-400 hover:text-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Reaction Form Card */}
+              <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
+                <CardContent className="p-6">
+                  <h3 className="mb-1 flex items-center gap-2 font-semibold">
+                    <ThumbsUp className="h-5 w-5 text-[#1877F2]" /> React to Post
+                  </h3>
+                  <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+                    All saved accounts react at once. 1 account = 1 reaction.
+                  </p>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Post URL</label>
+                      <Input
+                        value={reactUrl}
+                        onChange={(e) => setReactUrl(e.target.value)}
+                        placeholder="https://www.facebook.com/.../posts/..."
+                        className="h-11 rounded-2xl"
+                        disabled={reactMutation.isPending}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Reaction Type</label>
+                      <div className="grid grid-cols-6 gap-2">
+                        {(["LIKE", "LOVE", "HAHA", "WOW", "SAD", "ANGRY"] as const).map((r) => {
+                          const emojis: Record<string, string> = { LIKE: "👍", LOVE: "❤️", HAHA: "😂", WOW: "😮", SAD: "😢", ANGRY: "😡" };
+                          return (
+                            <button
+                              key={r}
+                              onClick={() => setReactType(r)}
+                              className={`flex flex-col items-center rounded-2xl border-2 py-2 text-xs font-semibold transition-all ${
+                                reactType === r
+                                  ? "border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2]"
+                                  : "border-slate-200 text-slate-500 hover:border-[#1877F2]/50 dark:border-slate-700"
+                              }`}
+                            >
+                              <span className="text-lg">{emojis[r]}</span>
+                              <span className="mt-0.5">{r}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleReact}
+                      disabled={reactMutation.isPending || !reactUrl.trim() || !sessionsQuery.data?.total}
+                      className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
+                    >
+                      {reactMutation.isPending ? (
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Reacting with {sessionsQuery.data?.total ?? 0} accounts...</>
+                      ) : (
+                        <><Zap className="mr-2 h-5 w-5" /> React with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                      )}
+                    </Button>
+
+                    {reactResult && (
+                      <div className={`rounded-2xl border p-4 text-sm ${
+                        reactResult.failed === 0
+                          ? "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300"
+                          : reactResult.success === 0
+                          ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+                          : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                      }`}>
+                        <div className="font-semibold">{reactResult.message}</div>
+                        <div className="mt-1 text-xs">{reactResult.success} succeeded · {reactResult.failed} failed · {reactResult.total} total accounts</div>
+                      </div>
+                    )}
+
+                    {reactLogs.length > 0 && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 dark:border-slate-700">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Reaction Log</p>
+                        <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-xs">
+                          {reactLogs.map((log, i) => (
+                            <div key={i} className={
+                              log.includes("✓") ? "text-green-400" :
+                              log.includes("✗") || log.includes("Error") ? "text-red-400" :
+                              "text-slate-300"
+                            }>{log}</div>
+                          ))}
+                          {reactMutation.isPending && (
                             <div className="flex items-center gap-1 text-[#1877F2]">
                               <Loader2 className="h-3 w-3 animate-spin" /> Processing...
                             </div>
