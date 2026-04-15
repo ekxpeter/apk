@@ -937,7 +937,7 @@ export default function Home() {
           <Tabs defaultValue="share" className="space-y-4">
             <TabsList className="grid h-auto grid-cols-6 rounded-3xl bg-white p-1 shadow-sm dark:bg-[#242526]">
               <TabsTrigger value="share" className="rounded-2xl">
-                <Share2 className="mr-1 h-4 w-4" /> Share
+                <Share2 className="mr-1 h-4 w-4" /> Ghost
               </TabsTrigger>
               <TabsTrigger value="feed" className="rounded-2xl">
                 <FileText className="mr-1 h-4 w-4" /> Posts
@@ -960,10 +960,11 @@ export default function Home() {
               <Card className="rounded-3xl border-0 shadow-sm dark:bg-[#242526]">
                 <CardContent className="p-6">
                   <h3 className="mb-1 flex items-center gap-2 font-semibold">
-                    <Share2 className="h-5 w-5 text-[#1877F2]" /> Share Post
+                    <Share2 className="h-5 w-5 text-[#1877F2]" /> Ghost Share
+                    <span className="rounded-full bg-[#1877F2]/10 px-2 py-0.5 text-xs font-semibold text-[#1877F2]">ONLY ME · Invisible</span>
                   </h3>
                   <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
-                    Share any Facebook post link multiple times using your account.
+                    Share counts up but the share is set to Only Me — invisible on your timeline and hidden from the post owner.
                   </p>
 
                   <div className="space-y-4">
@@ -1008,7 +1009,7 @@ export default function Home() {
                       ) : (
                         <>
                           <Share2 className="mr-2 h-5 w-5" />
-                          Share {shareCount} Time{shareCount !== 1 ? "s" : ""}
+                          Ghost Share {shareCount}×
                         </>
                       )}
                     </Button>
