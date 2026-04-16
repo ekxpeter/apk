@@ -1,139 +1,152 @@
 import { db, savedSessionsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
-const BROWSER_HEADERS = {
-  "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  accept:
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-  "accept-language": "en-US,en;q=0.9",
-  "accept-encoding": "identity",
-  "sec-fetch-dest": "document",
-  "sec-fetch-mode": "navigate",
-  "sec-fetch-site": "none",
-  "upgrade-insecure-requests": "1",
-  "cache-control": "no-cache",
-};
-
-function isProperlyLoggedIn(html: string, userId: string): boolean {
-  // Must have DTSGInitialData token (only present when logged in)
-  const hasDtsg = html.includes("DTSGInitialData");
-  // Must not be a login page
-  const isLoginPage =
-    html.includes('"loginForm"') ||
-    html.includes("login_form") ||
-    html.includes('"identifier":"LOGIN"') ||
-    html.includes("Log into Facebook") ||
-    html.includes("id=\"loginbutton\"") ||
-    html.includes('"m_login_email"');
-  // Must show the specific user ID in a session context
-  const hasSessionUserId =
-    html.includes(`"USER_ID":"${userId}"`) ||
-    html.includes(`"userID":"${userId}"`) ||
-    html.includes(`"viewer":{"id":"${userId}"`) ||
-    html.includes(`"actorID":"${userId}"`) ||
-    html.includes(`"c_user":"${userId}"`);
-
-  return hasDtsg && !isLoginPage && (hasSessionUserId || hasDtsg);
-}
-
+// Ping a session using Facebook's GraphQL endpoint — much more reliable from server IPs
+// Returns: "alive" | "dead" | "unknown" (unknown = server blocked, leave status as-is)
 async function pingSession(
   userId: string,
   cookie: string
-): Promise<{ alive: boolean; dtsg?: string; newCookie?: string }> {
-  const urls = [
-    `https://www.facebook.com/`,
-    `https://mbasic.facebook.com/`,
-  ];
+): Promise<{ status: "alive" | "dead" | "unknown"; dtsg?: string; newCookie?: string }> {
+  // Method 1: GraphQL lightweight query — works from server IPs when page loads don't
+  try {
+    const gqlRes = await fetch("https://www.facebook.com/api/graphql/", {
+      method: "POST",
+      headers: {
+        "user-agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/x-www-form-urlencoded",
+        "cookie": cookie,
+        "x-fb-friendly-name": "CometHeaderQuery",
+        "origin": "https://www.facebook.com",
+        "referer": "https://www.facebook.com/",
+      },
+      body: new URLSearchParams({
+        av: userId,
+        fb_api_caller_class: "RelayModern",
+        fb_api_req_friendly_name: "CometHeaderQuery",
+        variables: JSON.stringify({ userID: userId }),
+        doc_id: "4889923794442543",
+      }).toString(),
+      redirect: "follow",
+    });
 
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        headers: { ...BROWSER_HEADERS, cookie },
-        redirect: "follow",
-      });
+    const text = await gqlRes.text();
 
-      const finalUrl = res.url ?? "";
-      if (finalUrl.includes("login") || finalUrl.includes("checkpoint")) {
-        logger.warn({ url, finalUrl, userId }, "Keep-alive: redirected to login/checkpoint — session dead");
-        continue;
-      }
+    // Explicit dead signals
+    if (
+      text.includes('"error_code":190') ||
+      text.includes('"code":190') ||
+      text.includes("Not logged in") ||
+      text.includes('"not_logged_in"') ||
+      text.includes("1357001")
+    ) {
+      logger.warn({ userId }, "Keep-alive: GraphQL says not logged in — session dead");
+      return { status: "dead" };
+    }
 
-      const setCookieHeader = res.headers.get("set-cookie") || "";
-      const html = await res.text();
+    // Extract DTSG if present
+    let dtsg: string | undefined;
+    for (const pat of [
+      /"DTSGInitialData"[^}]*"token":"([^"]+)"/,
+      /\["DTSGInitialData",\[\],\{"token":"([^"]+)"/,
+      /"token":"(AQAA[^"]+)"/,
+      /"dtsg":"([^"]+)"/,
+    ]) {
+      const m = text.match(pat);
+      if (m) { dtsg = m[1]; break; }
+    }
 
-      const alive = isProperlyLoggedIn(html, userId);
+    // Valid response with user data = alive
+    if (
+      text.includes(`"id":"${userId}"`) ||
+      text.includes('"viewer"') ||
+      text.includes('"name"') ||
+      (gqlRes.status === 200 && text.length > 100 && !text.includes('"error"'))
+    ) {
+      logger.info({ userId }, "Keep-alive: GraphQL confirmed alive");
+      return { status: "alive", dtsg };
+    }
 
-      if (!alive) {
-        logger.warn({ url, userId, htmlSnippet: html.substring(0, 200) }, "Keep-alive: not properly logged in");
-        continue;
-      }
+    // If 302 or redirect to login — Facebook blocked our IP, don't assume dead
+    if (gqlRes.status === 302 || gqlRes.status === 301) {
+      logger.warn({ userId }, "Keep-alive: redirected (IP blocked?) — leaving status unchanged");
+      return { status: "unknown" };
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, "Keep-alive: GraphQL ping error — leaving status unchanged");
+    return { status: "unknown" };
+  }
 
+  // Method 2: mbasic profile page — simpler, less blocked
+  try {
+    const mbasicRes = await fetch(`https://mbasic.facebook.com/profile.php?id=${userId}`, {
+      headers: {
+        "user-agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "accept": "text/html,*/*;q=0.8",
+        "cookie": cookie,
+      },
+      redirect: "follow",
+    });
+
+    const finalUrl = mbasicRes.url ?? "";
+
+    // Redirected to login = definitively dead
+    if (finalUrl.includes("/login") && !finalUrl.includes("profile")) {
+      logger.warn({ userId, finalUrl }, "Keep-alive: mbasic redirected to login — session dead");
+      return { status: "dead" };
+    }
+
+    const html = await mbasicRes.text();
+
+    if (
+      html.includes('"loginForm"') ||
+      html.includes("Log into Facebook") ||
+      html.includes('id="loginbutton"') ||
+      html.includes("m_login_email")
+    ) {
+      logger.warn({ userId }, "Keep-alive: mbasic shows login page — session dead");
+      return { status: "dead" };
+    }
+
+    if (
+      html.includes(userId) ||
+      html.includes("timeline") ||
+      html.includes("Add Friend") ||
+      html.includes("Follow") ||
+      html.includes("profile_cover")
+    ) {
+      logger.info({ userId }, "Keep-alive: mbasic profile confirmed alive");
       let dtsg: string | undefined;
-      const dtsgPatterns = [
-        /"DTSGInitialData"[^}]*"token":"([^"]+)"/,
-        /\["DTSGInitialData",\[\],\{"token":"([^"]+)"/,
-        /"token":"(AQAA[^"]+)"/,
-        /fb_dtsg.*?value="([^"]+)"/,
-        /"name":"fb_dtsg","value":"([^"]+)"/,
-        /"dtsg":"([^"]+)"/,
-      ];
-      for (const pat of dtsgPatterns) {
+      for (const pat of [/"token":"(AQAA[^"]+)"/, /"dtsg":"([^"]+)"/]) {
         const m = html.match(pat);
         if (m) { dtsg = m[1]; break; }
       }
-
-      let newCookie: string | undefined;
-      if (setCookieHeader) {
-        const existingCookies: Record<string, string> = {};
-        for (const part of cookie.split(";")) {
-          const idx = part.indexOf("=");
-          if (idx === -1) continue;
-          const k = part.slice(0, idx).trim();
-          const v = part.slice(idx + 1).trim();
-          if (k) existingCookies[k] = v;
-        }
-
-        for (const setCookiePart of setCookieHeader.split(/,(?=[^;]+=[^;]+;)/)) {
-          const nameVal = setCookiePart.split(";")[0].trim();
-          const idx = nameVal.indexOf("=");
-          if (idx === -1) continue;
-          const k = nameVal.slice(0, idx).trim();
-          const v = nameVal.slice(idx + 1).trim();
-          if (k && !["path", "domain", "expires", "max-age", "samesite", "secure", "httponly"].includes(k.toLowerCase())) {
-            existingCookies[k] = v;
-          }
-        }
-
-        newCookie = Object.entries(existingCookies)
-          .map(([k, v]) => `${k}=${v}`)
-          .join("; ");
-      }
-
-      return { alive: true, dtsg, newCookie };
-    } catch (err) {
-      logger.error({ err, url, userId }, "Keep-alive ping error");
+      return { status: "alive", dtsg };
     }
+  } catch (err) {
+    logger.warn({ err, userId }, "Keep-alive: mbasic ping error — leaving status unchanged");
   }
 
-  return { alive: false };
+  // Ambiguous — don't kill a session on uncertainty
+  logger.warn({ userId }, "Keep-alive: ambiguous result — leaving session status unchanged");
+  return { status: "unknown" };
 }
 
 async function runKeepAlive() {
-  logger.info("Keep-alive: starting round for all sessions");
+  logger.info("Keep-alive: starting round for ALL sessions");
 
-  let sessions: Array<{ userId: string; cookie: string; dtsg: string | null; eaagToken: string | null }>;
+  let sessions: Array<{ userId: string; cookie: string; dtsg: string | null; isActive: boolean }>;
   try {
+    // Ping ALL sessions — not just active ones — to recover false-positives
     sessions = await db
       .select({
         userId: savedSessionsTable.userId,
         cookie: savedSessionsTable.cookie,
         dtsg: savedSessionsTable.dtsg,
-        eaagToken: savedSessionsTable.eaagToken,
+        isActive: savedSessionsTable.isActive,
       })
-      .from(savedSessionsTable)
-      .where(eq(savedSessionsTable.isActive, true));
+      .from(savedSessionsTable);
   } catch (err) {
     logger.error({ err }, "Keep-alive: failed to fetch sessions");
     return;
@@ -145,7 +158,7 @@ async function runKeepAlive() {
     try {
       const result = await pingSession(session.userId, session.cookie);
 
-      if (result.alive) {
+      if (result.status === "alive") {
         const updateData: Record<string, unknown> = {
           isActive: true,
           lastPinged: new Date(),
@@ -160,16 +173,27 @@ async function runKeepAlive() {
           .where(eq(savedSessionsTable.userId, session.userId));
 
         logger.info({ userId: session.userId }, "Keep-alive: session alive and refreshed");
-      } else {
+
+      } else if (result.status === "dead") {
+        // Only mark dead if we are SURE it's dead
         await db
           .update(savedSessionsTable)
           .set({ isActive: false, lastPinged: new Date(), updatedAt: new Date() })
           .where(eq(savedSessionsTable.userId, session.userId));
 
-        logger.warn({ userId: session.userId }, "Keep-alive: session marked inactive (logged out)");
+        logger.warn({ userId: session.userId }, "Keep-alive: session confirmed dead — marked inactive");
+
+      } else {
+        // Unknown — update lastPinged but leave isActive as-is
+        await db
+          .update(savedSessionsTable)
+          .set({ lastPinged: new Date(), updatedAt: new Date() })
+          .where(eq(savedSessionsTable.userId, session.userId));
+
+        logger.info({ userId: session.userId, wasActive: session.isActive }, "Keep-alive: ambiguous ping — status preserved");
       }
 
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
     } catch (err) {
       logger.error({ err, userId: session.userId }, "Keep-alive: error processing session");
     }
@@ -177,6 +201,8 @@ async function runKeepAlive() {
 
   logger.info("Keep-alive: round complete");
 }
+
+import { eq } from "drizzle-orm";
 
 const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000;
 

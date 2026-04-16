@@ -1400,7 +1400,7 @@ export default function Home() {
                           const s = sessionsQuery.data?.sessions ?? [];
                           const active = s.filter(x => x.isActive).length;
                           const total = s.length;
-                          return total === 0 ? "No saved accounts." : active === total ? `All ${total} accounts active.` : `${active} active / ${total - active} logged out.`;
+                          return total === 0 ? "No saved accounts." : `${total} account${total !== 1 ? "s" : ""} saved — all used for reactions.${active < total ? ` (${total - active} may need fresh cookies)` : ""}`;
                         })()}
                       </p>
                     </div>
@@ -2371,7 +2371,7 @@ export default function Home() {
                               <p className="font-mono text-xs text-slate-500">UID: {s.userId}</p>
                               <p className="text-xs text-slate-400">{s.createdAt ? new Date(s.createdAt).toLocaleString() : ""}</p>
                               {s.lastPinged && <p className="text-xs text-slate-400">Last checked: {new Date(s.lastPinged).toLocaleString()}</p>}
-                              {!s.isActive && <p className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">Cookie killed on logout. Re-import fresh cookies to restore.</p>}
+                              {!s.isActive && <p className="mt-1 text-xs font-medium text-orange-600 dark:text-orange-400">Still attempted in reactions. Re-import fresh cookies if it keeps failing.</p>}
                             </div>
                             <div className="flex shrink-0 items-center gap-1">
                               {!s.isActive && (

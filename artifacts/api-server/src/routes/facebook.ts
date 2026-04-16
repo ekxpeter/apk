@@ -3267,7 +3267,7 @@ router.post("/fb/react", async (req: Request, res: Response) => {
 
   let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
+    sessions = await db.select().from(savedSessionsTable);
   } catch (err) {
     logger.error({ err }, "Failed to fetch sessions from database");
     res.status(500).json({ message: "Database error fetching sessions" });
@@ -3275,7 +3275,7 @@ router.post("/fb/react", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions in database. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
     return;
   }
 
@@ -3283,7 +3283,7 @@ router.post("/fb/react", async (req: Request, res: Response) => {
   let success = 0;
   let failed = 0;
 
-  details.push(`Reacting to post with ${sessions.length} active account(s)...`);
+  details.push(`Reacting to post with ${sessions.length} saved account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
@@ -3647,7 +3647,7 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
 
   let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
+    sessions = await db.select().from(savedSessionsTable);
   } catch (err) {
     logger.error({ err }, "Failed to fetch sessions from database");
     res.status(500).json({ message: "Database error fetching sessions" });
@@ -3655,7 +3655,7 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions in database. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
     return;
   }
 
@@ -3663,7 +3663,7 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
   let success = 0;
   let failed = 0;
 
-  details.push(`Commenting on post with ${sessions.length} active account(s)...`);
+  details.push(`Commenting on post with ${sessions.length} saved account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
@@ -3904,7 +3904,7 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
 
   let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
+    sessions = await db.select().from(savedSessionsTable);
   } catch (err) {
     logger.error({ err }, "follow: db error");
     res.status(500).json({ message: "Database error" });
@@ -3912,14 +3912,14 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions. Login with cookies first.", details: [] });
     return;
   }
 
   const details: string[] = [];
   let success = 0, failed = 0;
 
-  details.push(`Following ${target} with ${sessions.length} active account(s)...`);
+  details.push(`Following ${target} with ${sessions.length} saved account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
