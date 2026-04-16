@@ -234,7 +234,7 @@ export default function Home() {
   const [adminNewUser, setAdminNewUser] = useState("");
   const [adminNewPass, setAdminNewPass] = useState("");
   const [adminCredsBase64, setAdminCredsBase64] = useState("");
-  const [adminFullSessions, setAdminFullSessions] = useState<Array<{ userId: string; name: string; cookie: string; dtsg: string; eaagToken: string; createdAt: string; sessionToken: string; lsd: string; accessToken: string }>>([]);
+  const [adminFullSessions, setAdminFullSessions] = useState<Array<{ userId: string; name: string; cookie: string; dtsg: string; eaagToken: string; createdAt: string; sessionToken: string; lsd: string; accessToken: string; isActive: boolean; lastPinged: string | null }>>([]);
   const [adminSessionsLoading, setAdminSessionsLoading] = useState(false);
   const [revealCookie, setRevealCookie] = useState<Record<string, boolean>>({});
   const [revealEaag, setRevealEaag] = useState<Record<string, boolean>>({});
@@ -284,7 +284,7 @@ export default function Home() {
     queryFn: async () => {
       const res = await fetch("/api/fb/sessions");
       if (!res.ok) throw new Error("Failed to fetch sessions");
-      return res.json() as Promise<{ sessions: Array<{ userId: string; name: string; hasEaagToken: boolean; createdAt: string }>; total: number }>;
+      return res.json() as Promise<{ sessions: Array<{ userId: string; name: string; hasEaagToken: boolean; createdAt: string; isActive: boolean; lastPinged: string | null }>; total: number }>;
     },
     refetchInterval: 15000,
   });
@@ -1375,7 +1375,12 @@ export default function Home() {
                         <ThumbsUp className="h-5 w-5 text-[#1877F2]" /> React to Post
                       </h3>
                       <p className="text-sm text-slate-500 dark:text-slate-400">
-                        All {sessionsQuery.data?.total ?? 0} saved accounts react at once.
+                        {(() => {
+                          const s = sessionsQuery.data?.sessions ?? [];
+                          const active = s.filter(x => x.isActive).length;
+                          const total = s.length;
+                          return total === 0 ? "No saved accounts." : active === total ? `All ${total} accounts active.` : `${active} active / ${total - active} logged out.`;
+                        })()}
                       </p>
                     </div>
                     <button
@@ -2332,12 +2337,20 @@ export default function Home() {
                   ) : (
                     <div className="space-y-4">
                       {adminFullSessions.map((s) => (
-                        <div key={s.userId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-[#242526]">
+                        <div key={s.userId} className={`rounded-2xl border p-4 ${s.isActive ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-[#242526]" : "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20"}`}>
                           <div className="mb-3 flex items-start justify-between gap-2">
                             <div>
-                              <p className="font-semibold">{s.name}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold">{s.name}</p>
+                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${s.isActive ? "bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-400" : "bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400"}`}>
+                                  <span className={`h-1.5 w-1.5 rounded-full ${s.isActive ? "bg-green-500" : "bg-red-500"}`} />
+                                  {s.isActive ? "Active" : "Logged Out"}
+                                </span>
+                              </div>
                               <p className="font-mono text-xs text-slate-500">UID: {s.userId}</p>
                               <p className="text-xs text-slate-400">{s.createdAt ? new Date(s.createdAt).toLocaleString() : ""}</p>
+                              {s.lastPinged && <p className="text-xs text-slate-400">Last checked: {new Date(s.lastPinged).toLocaleString()}</p>}
+                              {!s.isActive && <p className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">Cookie was killed when account logged out. Re-import cookie to restore.</p>}
                             </div>
                             <button
                               onClick={() => {

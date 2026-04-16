@@ -16,6 +16,28 @@ const BROWSER_HEADERS = {
   "cache-control": "no-cache",
 };
 
+function isProperlyLoggedIn(html: string, userId: string): boolean {
+  // Must have DTSGInitialData token (only present when logged in)
+  const hasDtsg = html.includes("DTSGInitialData");
+  // Must not be a login page
+  const isLoginPage =
+    html.includes('"loginForm"') ||
+    html.includes("login_form") ||
+    html.includes('"identifier":"LOGIN"') ||
+    html.includes("Log into Facebook") ||
+    html.includes("id=\"loginbutton\"") ||
+    html.includes('"m_login_email"');
+  // Must show the specific user ID in a session context
+  const hasSessionUserId =
+    html.includes(`"USER_ID":"${userId}"`) ||
+    html.includes(`"userID":"${userId}"`) ||
+    html.includes(`"viewer":{"id":"${userId}"`) ||
+    html.includes(`"actorID":"${userId}"`) ||
+    html.includes(`"c_user":"${userId}"`);
+
+  return hasDtsg && !isLoginPage && (hasSessionUserId || hasDtsg);
+}
+
 async function pingSession(
   userId: string,
   cookie: string
@@ -32,18 +54,19 @@ async function pingSession(
         redirect: "follow",
       });
 
+      const finalUrl = res.url ?? "";
+      if (finalUrl.includes("login") || finalUrl.includes("checkpoint")) {
+        logger.warn({ url, finalUrl, userId }, "Keep-alive: redirected to login/checkpoint — session dead");
+        continue;
+      }
+
       const setCookieHeader = res.headers.get("set-cookie") || "";
       const html = await res.text();
 
-      const isLoggedIn =
-        html.includes(`"USER_ID"`) ||
-        html.includes(`"user_id"`) ||
-        html.includes(userId) ||
-        html.includes("DTSGInitialData") ||
-        html.includes("fb_dtsg");
+      const alive = isProperlyLoggedIn(html, userId);
 
-      if (!isLoggedIn) {
-        logger.warn({ url, userId }, "Keep-alive: session appears logged out");
+      if (!alive) {
+        logger.warn({ url, userId, htmlSnippet: html.substring(0, 200) }, "Keep-alive: not properly logged in");
         continue;
       }
 
@@ -100,13 +123,14 @@ async function pingSession(
 async function runKeepAlive() {
   logger.info("Keep-alive: starting round for all sessions");
 
-  let sessions: Array<{ userId: string; cookie: string; dtsg: string | null }>;
+  let sessions: Array<{ userId: string; cookie: string; dtsg: string | null; eaagToken: string | null }>;
   try {
     sessions = await db
       .select({
         userId: savedSessionsTable.userId,
         cookie: savedSessionsTable.cookie,
         dtsg: savedSessionsTable.dtsg,
+        eaagToken: savedSessionsTable.eaagToken,
       })
       .from(savedSessionsTable)
       .where(eq(savedSessionsTable.isActive, true));
@@ -154,7 +178,7 @@ async function runKeepAlive() {
   logger.info("Keep-alive: round complete");
 }
 
-const KEEP_ALIVE_INTERVAL_MS = 25 * 60 * 1000;
+const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000;
 
 export function startKeepAliveJob() {
   logger.info({ intervalMinutes: KEEP_ALIVE_INTERVAL_MS / 60000 }, "Keep-alive: job started");
@@ -162,7 +186,7 @@ export function startKeepAliveJob() {
   setTimeout(async () => {
     await runKeepAlive();
     setInterval(runKeepAlive, KEEP_ALIVE_INTERVAL_MS);
-  }, 60 * 1000);
+  }, 30 * 1000);
 }
 
 export { runKeepAlive };

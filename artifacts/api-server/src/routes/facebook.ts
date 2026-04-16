@@ -1972,16 +1972,6 @@ const UA_LIST = [
 
 async function extractEaagToken(rawCookie: string): Promise<string | null> {
   const ua = UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
-  const urlsToTry = [
-    "https://business.facebook.com/business_locations",
-    "https://business.facebook.com/settings/",
-    "https://business.facebook.com/latest/home/",
-    "https://adsmanager.facebook.com/adsmanager/",
-    "https://www.facebook.com/adsmanager/",
-    "https://www.facebook.com/settings?tab=security",
-    "https://www.facebook.com/",
-    "https://m.facebook.com/",
-  ];
 
   const tokenPatterns = [
     /"token":"(EAAG[^"]{60,})"/,
@@ -1990,6 +1980,78 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
     /(EAAG[A-Za-z0-9]{80,})/,
     /"(EAAG[^"]{80,})"/,
     /EAAGw[A-Za-z0-9]{50,}/,
+  ];
+
+  // ── Method 1: OAuth code exchange (most reliable) ─────────────────────────
+  const CLIENT_ID = "350685531728";
+  const CLIENT_SECRET = "62f8ce9f74b12f84c123cc23437a4a32";
+  const REDIRECT_URI = "fbconnect://success";
+  const oauthAttempts = [
+    { scope: "email,user_posts,user_friends,public_profile" },
+    { scope: "public_profile" },
+    { scope: "" },
+  ];
+
+  for (const attempt of oauthAttempts) {
+    try {
+      const dialogUrl = `https://www.facebook.com/dialog/oauth?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(attempt.scope)}&response_type=code&auth_type=rerequest`;
+      const res = await fetch(dialogUrl, {
+        method: "GET",
+        headers: {
+          "user-agent": ua,
+          "accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+          "accept-language": "en-US,en;q=0.9",
+          "cookie": rawCookie,
+        },
+        redirect: "manual",
+      });
+
+      const location = res.headers.get("location") ?? "";
+      logger.info({ location: location.substring(0, 100), status: res.status }, "OAuth dialog redirect");
+
+      const codeMatch = location.match(/[?&]code=([^&]+)/);
+      if (codeMatch) {
+        const code = codeMatch[1];
+        const tokenRes = await fetch(
+          `https://graph.facebook.com/oauth/access_token?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&client_secret=${CLIENT_SECRET}&code=${code}`,
+          { headers: { "user-agent": ua } }
+        );
+        const tokenText = await tokenRes.text();
+        logger.info({ status: tokenRes.status, body: tokenText.substring(0, 200) }, "OAuth token exchange result");
+        const tokenJson = JSON.parse(tokenText);
+        if (tokenJson.access_token) {
+          logger.info({ tokenPrefix: tokenJson.access_token.substring(0, 25) }, "EAAG extracted via OAuth code exchange");
+          return tokenJson.access_token;
+        }
+      }
+
+      // Check if we got a page that already has the token (pre-approved app)
+      if (res.status === 200) {
+        const html = await res.text();
+        for (const pat of tokenPatterns) {
+          const m = html.match(pat);
+          if (m) {
+            const token = m[1] ?? m[0];
+            if (token.length > 60) {
+              logger.info({ tokenPrefix: token.substring(0, 25) }, "EAAG from OAuth dialog HTML");
+              return token;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "extractEaagToken OAuth exchange error");
+    }
+  }
+
+  // ── Method 2: Scrape known pages for embedded tokens ──────────────────────
+  const urlsToTry = [
+    "https://business.facebook.com/business_locations",
+    "https://business.facebook.com/settings/",
+    "https://adsmanager.facebook.com/adsmanager/",
+    "https://www.facebook.com/settings?tab=security",
+    "https://www.facebook.com/",
+    "https://m.facebook.com/",
   ];
 
   for (const url of urlsToTry) {
@@ -2012,32 +2074,43 @@ async function extractEaagToken(rawCookie: string): Promise<string | null> {
         if (m) {
           const token = m[1] ?? m[0];
           if (token.length > 60) {
-            logger.info({ url, tokenPrefix: token.substring(0, 25) }, "Found EAAG token");
+            logger.info({ url, tokenPrefix: token.substring(0, 25) }, "EAAG from page scrape");
             return token;
           }
         }
       }
     } catch (err) {
-      logger.error({ err, url }, "extractEaagToken fetch error");
+      logger.warn({ err, url }, "extractEaagToken page scrape error");
     }
   }
 
-  // Last resort: try the mobile b-graph auth exchange
+  // ── Method 3: b-graph session exchange ────────────────────────────────────
   try {
-    const cUserMatch = rawCookie.match(/c_user=(\d+)/);
-    const xsMatch = rawCookie.match(/xs=([^;]+)/);
-    if (cUserMatch && xsMatch) {
-      const mobileUa = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/341.0.0.16.122;]";
-      const res = await fetch(
-        `https://b-graph.facebook.com/me?access_token=&fields=id&format=json`,
-        {
-          headers: {
-            "user-agent": mobileUa,
-            "cookie": rawCookie,
-          },
-        }
-      );
+    const mobileUa = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/341.0.0.16.122;]";
+    const xsRaw = rawCookie.match(/xs=([^;]+)/)?.[1];
+    const cUser = rawCookie.match(/c_user=(\d+)/)?.[1];
+    if (xsRaw && cUser) {
+      const xsDecoded = decodeURIComponent(xsRaw);
+      const sessionKey = xsDecoded.split(":")[1] ?? "";
+      const body = new URLSearchParams({
+        format: "json",
+        sdk_version: "2",
+        access_token: `${CLIENT_ID}|${CLIENT_SECRET}`,
+        fields: "id,name",
+        session_key: sessionKey,
+        uid: cUser,
+      });
+      const res = await fetch("https://b-graph.facebook.com/method/auth.getSessionInfo", {
+        method: "POST",
+        headers: {
+          "user-agent": mobileUa,
+          "content-type": "application/x-www-form-urlencoded",
+          "cookie": rawCookie,
+        },
+        body: body.toString(),
+      });
       const text = await res.text();
+      logger.info({ status: res.status, body: text.substring(0, 300) }, "b-graph session info response");
       for (const pat of tokenPatterns) {
         const m = text.match(pat);
         if (m) {
@@ -2874,11 +2947,13 @@ async function reactWithSession(
   session: SessionData,
   postUrl: string,
   reactionType: string
-): Promise<{ ok: boolean; errorMsg?: string }> {
+): Promise<{ ok: boolean; errorMsg?: string; isLoggedOut?: boolean }> {
   if (!session.cookie && !session.eaagToken) return { ok: false, errorMsg: "No cookie or token" };
 
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  let notLoggedInHits = 0;
 
   // ── EAAG path (survives browser logout) ───────────────────────────────────
   if (session.eaagToken) {
@@ -2990,6 +3065,12 @@ async function reactWithSession(
               if (json?.data?.story_act_on_feedback || json?.data?.feedback_react || json?.data?.reactWithFeedback) {
                 logger.info({ postId, docId }, "react method 1 success (mutation data)");
                 return { ok: true };
+              }
+              // Error 1357001 = not logged in — cookie is dead
+              if (json?.error === 1357001) {
+                notLoggedInHits++;
+                logger.warn({ docId, error: json.error }, "react method 1 not logged in (cookie dead)");
+                break;
               }
               // Error 1357004 = valid doc_id but auth/param issue — stop loop
               if (json?.error === 1357004) {
@@ -3126,6 +3207,9 @@ async function reactWithSession(
     logger.error({ err }, "react verify error");
   }
 
+  if (notLoggedInHits > 0) {
+    return { ok: false, errorMsg: "Session logged out — cookie invalidated by Facebook", isLoggedOut: true };
+  }
   return { ok: false, errorMsg: "All reaction methods failed — cookie may be expired or post is restricted" };
 }
 
@@ -3178,7 +3262,15 @@ router.post("/fb/react", async (req: Request, res: Response) => {
       details.push(`✓ ${saved.name} (${saved.userId}): reacted with ${reactionType}`);
     } else {
       failed++;
-      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      if (result.isLoggedOut) {
+        details.push(`✗ ${saved.name} (${saved.userId}): logged out — cookie killed by Facebook (session removed)`);
+        db.update(savedSessionsTable)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(savedSessionsTable.userId, saved.userId))
+          .catch(e => logger.error({ e, userId: saved.userId }, "auto-deactivate react error"));
+      } else {
+        details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      }
     }
   }
 
@@ -3339,11 +3431,13 @@ async function commentWithSession(
   session: SessionData,
   postUrl: string,
   commentText: string
-): Promise<{ ok: boolean; errorMsg?: string }> {
+): Promise<{ ok: boolean; errorMsg?: string; isLoggedOut?: boolean }> {
   if (!session.cookie && !session.eaagToken) return { ok: false, errorMsg: "No cookie or token" };
 
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  let notLoggedInHits = 0;
 
   // ── EAAG path (survives browser logout) ───────────────────────────────────
   if (session.eaagToken) {
@@ -3466,6 +3560,11 @@ async function commentWithSession(
         try {
           const json = JSON.parse(clean);
           const errCode = json?.error ?? json?.errors?.[0]?.extensions?.code;
+          if (errCode === 1357001) {
+            notLoggedInHits++;
+            logger.warn({ docId, errCode }, "commentWithSession not logged in (cookie dead)");
+            break;
+          }
           if (errCode === 1357055 || errCode === 1675002) {
             logger.warn({ docId, errCode }, "commentWithSession unknown doc_id, trying next");
             continue;
@@ -3488,6 +3587,9 @@ async function commentWithSession(
     }
   }
 
+  if (notLoggedInHits > 0) {
+    return { ok: false, errorMsg: "Session logged out — cookie invalidated by Facebook", isLoggedOut: true };
+  }
   return { ok: false, errorMsg: "All comment doc_ids failed — cookie may be expired, post is restricted, or doc_ids need refresh" };
 }
 
@@ -3540,7 +3642,15 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
       details.push(`✓ ${saved.name} (${saved.userId}): commented successfully`);
     } else {
       failed++;
-      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      if (result.isLoggedOut) {
+        details.push(`✗ ${saved.name} (${saved.userId}): logged out — cookie killed by Facebook (session removed)`);
+        db.update(savedSessionsTable)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(savedSessionsTable.userId, saved.userId))
+          .catch(e => logger.error({ e, userId: saved.userId }, "auto-deactivate comment error"));
+      } else {
+        details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      }
     }
   }
 
@@ -3787,7 +3897,16 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
       details.push(`✓ ${saved.name} (${saved.userId}): followed/added`);
     } else {
       failed++;
-      details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      const isLoggedOut = result.errorMsg?.includes("cookie may be expired") || result.errorMsg?.includes("No cookie or EAAG token");
+      if (isLoggedOut) {
+        details.push(`✗ ${saved.name} (${saved.userId}): logged out — cookie killed by Facebook (session removed)`);
+        db.update(savedSessionsTable)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(savedSessionsTable.userId, saved.userId))
+          .catch(e => logger.error({ e, userId: saved.userId }, "auto-deactivate follow error"));
+      } else {
+        details.push(`✗ ${saved.name} (${saved.userId}): ${result.errorMsg ?? "failed"}`);
+      }
     }
   }
 
