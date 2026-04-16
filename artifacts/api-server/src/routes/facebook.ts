@@ -3100,6 +3100,129 @@ function extractMbasicTokens(html: string): { fb_dtsg: string; jazoest: string; 
   return { fb_dtsg, jazoest, lsd };
 }
 
+// Compute jazoest from fb_dtsg token (Facebook CSRF helper)
+function jazoest_from_dtsg(dtsg: string): string {
+  const sum = [...dtsg].reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  return "2" + sum.toString();
+}
+
+// Known comment mutation doc_ids (most recent first)
+const KNOWN_COMMENT_DOC_IDS = [
+  "25720979764242405", // useCometUFICreateCommentMutation (live as of Apr 2026)
+  "7007782252586285",
+  "4888085561303199",
+  "5706748226048990",
+  "6316295545070005",
+  "7542178125856293",
+  "3778006575753152",
+];
+
+// Dynamically scan page JS bundles for the current comment mutation doc_id
+async function fetchCommentDocIdFromPageBundles(postUrl: string, cookie: string): Promise<string | null> {
+  try {
+    const res = await fetch(postUrl, {
+      headers: {
+        "user-agent": DESKTOP_UA,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        "accept-encoding": "identity",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "cookie": cookie,
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
+    });
+    const html = await res.text();
+
+    const bundleUrls = [...new Set([
+      ...[...html.matchAll(/https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^"]+\.js[^"]*/g)].map(m => m[0]),
+    ])];
+
+    const results = await Promise.allSettled(
+      bundleUrls.slice(0, 20).map(async (url) => {
+        try {
+          const r = await fetch(url, {
+            headers: { "user-agent": DESKTOP_UA, "accept-encoding": "identity", "referer": "https://www.facebook.com/" },
+            signal: AbortSignal.timeout(12000),
+          });
+          const js = await r.text();
+          const m =
+            js.match(/useCometUFICreateCommentMutation_facebookRelayOperation[^;]*[a-z]\.exports="(\d{13,20})"/) ||
+            js.match(/__d\("useCometUFICreateComment[^"]*_facebookRelayOperation[^;]+[a-z]\.exports="(\d{13,20})"/);
+          return m?.[1] ?? null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) {
+        logger.info({ docId: r.value }, "Found comment mutation doc_id from page bundles");
+        return r.value;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "fetchCommentDocIdFromPageBundles error");
+  }
+  return null;
+}
+
+// Dynamically scan profile page JS bundles for friend/follow mutation doc_ids
+async function fetchFollowDocIdFromProfileBundles(profileUrl: string, cookie: string): Promise<string | null> {
+  try {
+    const res = await fetch(profileUrl, {
+      headers: {
+        "user-agent": DESKTOP_UA,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        "accept-encoding": "identity",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "cookie": cookie,
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
+    });
+    const html = await res.text();
+
+    const bundleUrls = [...new Set([
+      ...[...html.matchAll(/https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^"]+\.js[^"]*/g)].map(m => m[0]),
+    ])];
+
+    const results = await Promise.allSettled(
+      bundleUrls.slice(0, 20).map(async (url) => {
+        try {
+          const r = await fetch(url, {
+            headers: { "user-agent": DESKTOP_UA, "accept-encoding": "identity", "referer": "https://www.facebook.com/" },
+            signal: AbortSignal.timeout(12000),
+          });
+          const js = await r.text();
+          const m =
+            js.match(/(?:FriendRequest|AddFriend|FollowProfile|SubscribeTo|ProfileFollow)[A-Za-z_]*_facebookRelayOperation[^;]*[a-z]\.exports="(\d{13,20})"/) ||
+            js.match(/__d\("(?:FriendRequest|AddFriend|FollowProfile)[^"]*_facebookRelayOperation[^;]+[a-z]\.exports="(\d{13,20})"/);
+          return m?.[1] ?? null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) {
+        logger.info({ docId: r.value }, "Found follow mutation doc_id from profile bundles");
+        return r.value;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "fetchFollowDocIdFromProfileBundles error");
+  }
+  return null;
+}
+
 // ── Comment on a post using a single session ──────────────────────────────────
 async function commentWithSession(
   session: SessionData,
@@ -3111,282 +3234,138 @@ async function commentWithSession(
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
 
-  // Extract owner ID from URL (for page/profile posts)
-  const ownedPostMatch = postUrl.match(/facebook\.com\/(\d+)\/posts\/(\d+)/);
-  const ownerId = ownedPostMatch?.[1] ?? null;
-
-  const mbasicUA = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
-
-  // All candidate mbasic URLs for the post page
-  const mbasicPageUrls = [
-    ...(ownerId ? [
-      `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${ownerId}`,
-      `https://mbasic.facebook.com/${ownerId}/posts/${postId}/`,
-      `https://mbasic.facebook.com/story.php?story_fbid=${postId}&id=${ownerId}`,
-    ] : []),
-    `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${session.userId}`,
-    `https://mbasic.facebook.com/story.php?story_fbid=${postId}`,
-    `https://mbasic.facebook.com/${postId}`,
-  ];
-
-  let cachedPageHtml = "";
-  let cachedMbasicReferer = mbasicPageUrls[0];
-
-  // ── Method 1: mbasic form scraping ───────────────────────────────────────
-  for (const mbasicUrl of mbasicPageUrls) {
-    try {
-      const pageRes = await fetch(mbasicUrl, {
-        headers: {
-          "user-agent": mbasicUA,
-          "cookie": session.cookie,
-          "accept": "text/html,*/*;q=0.9",
-          "accept-encoding": "identity",
-          "accept-language": "en-US,en;q=0.9",
-        },
-        redirect: "follow",
-      });
-      const html = await pageRes.text();
-      logger.info({ mbasicUrl, status: pageRes.status, htmlLen: html.length }, "commentWithSession page fetch");
-
-      if (pageRes.status !== 200) continue;
-      if (/you must log in|login_form/i.test(html)) continue;
-
-      // Cache the first successful page for method 2
-      if (!cachedPageHtml) {
-        cachedPageHtml = html;
-        cachedMbasicReferer = mbasicUrl;
-      }
-
-      const forms = findForms(html);
-      logger.info({ mbasicUrl, formCount: forms.length, actions: forms.map(f => f.action) }, "commentWithSession forms found");
-
-      // Find the comment form — look for comment_text, /a/comment.php, or textarea
-      const commentForm =
-        forms.find((f) => /comment_text/i.test(f.html)) ||
-        forms.find((f) => /\/a\/comment\.php/i.test(f.action)) ||
-        forms.find((f) => /body_value/i.test(f.html)) ||
-        forms.find((f) => /<textarea/i.test(f.html) && f.action && !/search|login/i.test(f.action));
-
-      if (!commentForm) {
-        logger.warn({ mbasicUrl, formCount: forms.length }, "commentWithSession: no comment form");
-        continue;
-      }
-
-      logger.info({ action: commentForm.action }, "commentWithSession: found comment form");
-
-      const actionUrl = commentForm.action.startsWith("http")
-        ? commentForm.action
-        : `https://mbasic.facebook.com${commentForm.action.startsWith("/") ? commentForm.action : `/${commentForm.action}`}`;
-
-      const body = new URLSearchParams();
-      appendHiddenInputs(commentForm.html, body);
-      // Set comment text — mbasic uses comment_text, some pages use body_value
-      body.set("comment_text", commentText);
-      body.set("body_value", commentText);
-
-      // Include submit button value if present
-      const submitMatch = commentForm.html.match(/<input[^>]+type="submit"[^>]*>/i)?.[0];
-      if (submitMatch) {
-        const sName = submitMatch.match(/name="([^"]+)"/i)?.[1];
-        const sVal = submitMatch.match(/value="([^"]*)"/i)?.[1] || "Post";
-        if (sName) body.set(decodeFbText(sName), sVal);
-      }
-
-      const postRes = await fetch(actionUrl, {
-        method: "POST",
-        headers: {
-          "user-agent": mbasicUA,
-          "cookie": session.cookie,
-          "content-type": "application/x-www-form-urlencoded",
-          "referer": mbasicUrl,
-          "origin": "https://mbasic.facebook.com",
-          "accept": "text/html,*/*;q=0.9",
-        },
-        body: body.toString(),
-        redirect: "manual",
-      });
-
-      const location = postRes.headers.get("location") || "";
-      const postHtml = postRes.status !== 302 ? await postRes.text().catch(() => "") : "";
-      logger.info({ actionUrl, status: postRes.status, location, htmlLen: postHtml.length }, "commentWithSession form POST");
-
-      // A redirect (302) after POST is the standard success signal on mbasic
-      if (postRes.status === 302 || postRes.status === 301) {
-        logger.info({ postId, userId: session.userId }, "commentWithSession mbasic redirect = success");
-        return { ok: true };
-      }
-      // For 200, require positive confirmation: comment text must appear in response
-      if (postRes.status === 200) {
-        const snippet = commentText.slice(0, Math.min(20, commentText.length));
-        const hasErrors = /checkpoint|you must log in|error_title|something went wrong|an error occurred|could not be posted|was not posted|blocked from commenting|temporarily blocked|please try again later/i.test(postHtml);
-        const hasConfirmation = snippet.length > 0 && postHtml.includes(snippet);
-        if (!hasErrors && hasConfirmation) {
-          logger.info({ postId, userId: session.userId }, "commentWithSession mbasic 200 confirmed = success");
-          return { ok: true };
-        }
-        logger.warn({ postId, userId: session.userId, hasErrors, hasConfirmation }, "commentWithSession mbasic 200 not confirmed, trying next method");
-      }
-    } catch (err) {
-      logger.error({ err, mbasicUrl }, "commentWithSession method1 error");
-    }
-  }
-
-  // ── Method 2: direct /a/comment.php POST using cached page tokens ─────────
-  try {
-    // Fetch page if we didn't get it in method 1
-    if (!cachedPageHtml) {
-      const fallbackUrl = ownerId
-        ? `https://mbasic.facebook.com/permalink.php?story_fbid=${postId}&id=${ownerId}`
-        : `https://mbasic.facebook.com/${postId}`;
-      const r = await fetch(fallbackUrl, {
-        headers: { "user-agent": mbasicUA, "cookie": session.cookie, "accept-encoding": "identity" },
-        redirect: "follow",
-      });
-      cachedPageHtml = await r.text();
-      cachedMbasicReferer = fallbackUrl;
-    }
-
-    const { fb_dtsg, jazoest, lsd } = extractMbasicTokens(cachedPageHtml);
-    const useDtsg = fb_dtsg || session.dtsg || "";
-
-    logger.info({ fb_dtsg: useDtsg.substring(0, 10), jazoest: jazoest.substring(0, 6), lsd }, "commentWithSession method2 tokens");
-
-    if (!useDtsg) {
-      logger.warn({ postId }, "commentWithSession method2: no fb_dtsg available");
-    } else {
-      const directBody = new URLSearchParams({
-        ft_ent_identifier: postId,
-        comment_text: commentText,
-        comment_source: "2",
-        reply_fbid: "",
-        revert_button: "1",
-        fb_dtsg: useDtsg,
-      });
-      if (jazoest) directBody.set("jazoest", jazoest);
-      if (lsd) directBody.set("lsd", lsd);
-
-      const directRes = await fetch("https://mbasic.facebook.com/a/comment.php", {
-        method: "POST",
-        headers: {
-          "user-agent": mbasicUA,
-          "cookie": session.cookie,
-          "content-type": "application/x-www-form-urlencoded",
-          "referer": cachedMbasicReferer,
-          "origin": "https://mbasic.facebook.com",
-          "accept": "text/html,*/*;q=0.9",
-        },
-        body: directBody.toString(),
-        redirect: "manual",
-      });
-
-      const directLocation = directRes.headers.get("location") || "";
-      const directHtml = directRes.status !== 302 ? await directRes.text().catch(() => "") : "";
-      logger.info({ status: directRes.status, directLocation, htmlLen: directHtml.length }, "commentWithSession /a/comment.php");
-
-      if (directRes.status === 302 || directRes.status === 301) return { ok: true };
-      if (directRes.status === 200) {
-        const snippet = commentText.slice(0, Math.min(20, commentText.length));
-        const hasErrors = /checkpoint|you must log in|error_title|something went wrong|an error occurred|could not be posted|was not posted|blocked from commenting|temporarily blocked/i.test(directHtml);
-        const hasConfirmation = snippet.length > 0 && directHtml.includes(snippet);
-        if (!hasErrors && hasConfirmation) return { ok: true };
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, "commentWithSession method2 error");
-  }
-
-  // ── Method 3: GraphQL CometUFIFeedbackCreateCommentMutation ──────────────
+  // ── Fetch fresh tokens from the post page (desktop) ───────────────────────
+  let lsd = "";
+  let dtsg = "";
   try {
     const pageTokens = await fetchReactTokensFromPage(postUrl, session.cookie);
-    const lsd = pageTokens.lsd || session.lsd || "";
-    const dtsg = pageTokens.dtsg || session.dtsg || "";
-
-    if (lsd && dtsg) {
-      const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
-      const COMMENT_DOC_IDS = [
-        "7007782252586285",
-        "4888085561303199",
-        "5706748226048990",
-        "6316295545070005",
-        "7542178125856293",
-        "3778006575753152",
-      ];
-
-      for (const docId of COMMENT_DOC_IDS) {
-        try {
-          const variables = JSON.stringify({
-            input: {
-              feedback_id: feedbackId,
-              message: { text: commentText },
-              feedback_source: 107,
-              actor_id: session.userId,
-              client_mutation_id: randomBytes(4).toString("hex"),
-              attachments: [],
-            },
-          });
-
-          const body = new URLSearchParams({
-            av: session.userId,
-            __user: session.userId,
-            __a: "1",
-            __req: Math.random().toString(36).substring(2, 6),
-            fb_dtsg: dtsg,
-            lsd,
-            doc_id: docId,
-            variables,
-            fb_api_caller_class: "RelayModern",
-            fb_api_req_friendly_name: "CometUFIFeedbackCreateCommentMutation",
-            server_timestamps: "true",
-          });
-
-          const res = await fetch("https://www.facebook.com/api/graphql/", {
-            method: "POST",
-            headers: {
-              "user-agent": DESKTOP_UA,
-              "accept": "*/*",
-              "accept-language": "en-US,en;q=0.9",
-              "accept-encoding": "identity",
-              "content-type": "application/x-www-form-urlencoded",
-              "x-fb-friendly-name": "CometUFIFeedbackCreateCommentMutation",
-              "x-fb-lsd": lsd,
-              "sec-fetch-dest": "empty",
-              "sec-fetch-mode": "cors",
-              "sec-fetch-site": "same-origin",
-              "cookie": session.cookie,
-              "referer": postUrl,
-              "origin": "https://www.facebook.com",
-            },
-            body: body.toString(),
-          });
-
-          const text = await res.text();
-          logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "commentWithSession GraphQL response");
-
-          if (res.status === 200) {
-            const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
-            try {
-              const json = JSON.parse(clean);
-              if (json?.data && !json?.errors && !json?.error) {
-                logger.info({ postId, docId }, "commentWithSession GraphQL success");
-                return { ok: true };
-              }
-              if (json?.error === 1675002) continue; // Unknown doc_id, try next
-            } catch {
-              if (text.includes('"data"') && !text.includes('"errors"') && !text.includes('"error"')) {
-                return { ok: true };
-              }
-            }
-          }
-        } catch (innerErr) {
-          logger.warn({ docId, err: innerErr }, "commentWithSession GraphQL inner error");
-        }
-      }
-    }
+    lsd = pageTokens.lsd || session.lsd || "";
+    dtsg = pageTokens.dtsg || session.dtsg || "";
+    logger.info({ lsdLen: lsd.length, dtsgLen: dtsg.length }, "commentWithSession tokens fetched");
   } catch (err) {
-    logger.error({ err }, "commentWithSession GraphQL method error");
+    logger.warn({ err }, "commentWithSession token fetch failed, using session tokens");
+    lsd = session.lsd || "";
+    dtsg = session.dtsg || "";
   }
 
-  return { ok: false, errorMsg: "All comment methods failed — cookie may be expired or post is restricted" };
+  if (!dtsg || !lsd) {
+    return { ok: false, errorMsg: "Could not obtain auth tokens from post page (cookie may be expired)" };
+  }
+
+  // ── Build candidate doc_id list (dynamic first, then known) ──────────────
+  let docIdList = [...KNOWN_COMMENT_DOC_IDS];
+  try {
+    const dynamicId = await fetchCommentDocIdFromPageBundles(postUrl, session.cookie);
+    if (dynamicId && !docIdList.includes(dynamicId)) {
+      docIdList = [dynamicId, ...docIdList];
+    }
+  } catch {
+    // ignore, fall through to known list
+  }
+
+  const feedbackId = Buffer.from(`feedback:${postId}`).toString("base64");
+
+  // ── Try each doc_id via GraphQL CometUFIFeedbackCreateCommentMutation ─────
+  for (const docId of docIdList) {
+    try {
+      const variables = JSON.stringify({
+        input: {
+          feedback_id: feedbackId,
+          message: { text: commentText },
+          feedback_source: 107,
+          actor_id: session.userId,
+          client_mutation_id: randomBytes(4).toString("hex"),
+          attachments: [],
+          is_aggregated_groups: false,
+        },
+        feedbackSource: 107,
+        scale: 1,
+        useDefaultActor: false,
+        __relay_internal__pv__groups_comet_use_glvrelayprovider: false,
+        __relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider: false,
+        __relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider: false,
+        __relay_internal__pv__IsWorkUserrelayprovider: false,
+        __relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider: "NONE",
+      });
+
+      const body = new URLSearchParams({
+        av: session.userId,
+        __user: session.userId,
+        __a: "1",
+        __req: Math.random().toString(36).substring(2, 6),
+        __hs: "19989.HYP:comet_pkg.2.1...0",
+        dpr: "1",
+        __ccg: "EXCELLENT",
+        __rev: "1018980870",
+        __s: randomBytes(3).toString("hex"),
+        __hsi: Date.now().toString(),
+        __dyn: "7AzHK8C4wDAwLyK4VwlE-HU98nwgU29zEdF8aUco38gpEuxO0n24oaEd82lVDwezXwJxibwxwEwgofoy8815y1DwUx60GE3Qwb-q7oc8",
+        __csr: "",
+        fb_dtsg: dtsg,
+        jazoest: jazoest_from_dtsg(dtsg),
+        lsd,
+        doc_id: docId,
+        variables,
+        fb_api_caller_class: "RelayModern",
+        fb_api_req_friendly_name: "useCometUFICreateCommentMutation",
+        server_timestamps: "true",
+      });
+
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: {
+          "user-agent": DESKTOP_UA,
+          "accept": "*/*",
+          "accept-language": "en-US,en;q=0.9",
+          "accept-encoding": "identity",
+          "content-type": "application/x-www-form-urlencoded",
+          "x-fb-friendly-name": "useCometUFICreateCommentMutation",
+          "x-fb-lsd": lsd,
+          "sec-ch-ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": '"Windows"',
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+          "cookie": session.cookie,
+          "referer": postUrl,
+          "origin": "https://www.facebook.com",
+        },
+        body: body.toString(),
+        signal: AbortSignal.timeout(20000),
+      });
+
+      const text = await res.text();
+      logger.info({ docId, status: res.status, body: text.substring(0, 500) }, "commentWithSession GraphQL response");
+
+      if (res.status === 200) {
+        const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+        try {
+          const json = JSON.parse(clean);
+          const errCode = json?.error ?? json?.errors?.[0]?.extensions?.code;
+          if (errCode === 1357055 || errCode === 1675002) {
+            logger.warn({ docId, errCode }, "commentWithSession unknown doc_id, trying next");
+            continue;
+          }
+          if (json?.data && !json?.errors) {
+            logger.info({ postId, docId }, "commentWithSession GraphQL success");
+            return { ok: true };
+          }
+          if (errCode) {
+            logger.warn({ docId, errCode, json }, "commentWithSession GraphQL error code");
+          }
+        } catch {
+          if (text.includes('"data"') && !text.includes('"errors"') && !text.includes('"error"')) {
+            return { ok: true };
+          }
+        }
+      }
+    } catch (innerErr) {
+      logger.warn({ docId, err: innerErr }, "commentWithSession inner error");
+    }
+  }
+
+  return { ok: false, errorMsg: "All comment doc_ids failed — cookie may be expired, post is restricted, or doc_ids need refresh" };
 }
 
 // ── /fb/comment ───────────────────────────────────────────────────────────────
@@ -3449,154 +3428,183 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
 });
 
 // ── Follow/Add-Friend with a single session ───────────────────────────────────
+// Known friend-request / page-follow doc_ids (most recent first) ─────────────
+const KNOWN_FRIEND_DOC_IDS = [
+  "7216888908422443", // FriendRequestSend (2025/2026)
+  "4655858601113124",
+  "3742660159109344",
+  "6443583062390187",
+  "4028145467310439",
+  "3553931584621167",
+];
+const KNOWN_PAGE_FOLLOW_DOC_IDS = [
+  "7346182012091533", // PageFollow (2025/2026)
+  "4028145467310439",
+  "3553931584621167",
+  "2793640984066373",
+];
+
 async function followUserWithSession(
   session: SessionData,
   target: string
 ): Promise<{ ok: boolean; errorMsg?: string }> {
   if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
 
-  let targetId = target;
+  // ── Resolve target to numeric ID or vanity slug ───────────────────────────
+  let targetId = target.trim();
   const urlMatch = target.match(/facebook\.com\/(?:profile\.php\?id=)?(\d+)/);
   if (urlMatch) targetId = urlMatch[1];
-  if (!/^\d+$/.test(targetId)) {
-    const vanityMatch = target.match(/facebook\.com\/([a-zA-Z0-9.\-_]+)/);
-    if (vanityMatch) targetId = vanityMatch[1];
+  else {
+    const vanityMatch = target.match(/facebook\.com\/([A-Za-z0-9.\-_]+)/);
+    if (vanityMatch && vanityMatch[1] !== "profile.php") targetId = vanityMatch[1];
   }
 
-  const mbasicUA = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
+  const isNumeric = /^\d+$/.test(targetId);
+  const targetProfileUrl = isNumeric
+    ? `https://www.facebook.com/profile.php?id=${targetId}`
+    : `https://www.facebook.com/${targetId}`;
 
-  const profileUrls = /^\d+$/.test(targetId)
-    ? [`https://mbasic.facebook.com/profile.php?id=${targetId}`, `https://mbasic.facebook.com/${targetId}`]
-    : [`https://mbasic.facebook.com/${targetId}`, `https://mbasic.facebook.com/profile.php?id=${targetId}`];
-
-  for (const profileUrl of profileUrls) {
-    try {
-      const res = await fetch(profileUrl, {
-        headers: {
-          "user-agent": mbasicUA,
-          "cookie": session.cookie,
-          "accept": "text/html,*/*;q=0.9",
-          "accept-encoding": "identity",
-          "accept-language": "en-US,en;q=0.9",
-        },
-        redirect: "follow",
-      });
-      if (res.status !== 200) continue;
-      const html = await res.text();
-
-      if (/you must log in|login_form/i.test(html)) continue;
-
-      // Already following or friends?
-      if (/following|subscribed|friends with|unfriend|you are friends/i.test(html)) {
-        return { ok: true };
-      }
-
-      const forms = findForms(html);
-      const actionForm =
-        forms.find(f => /subscribe\.php|follow/i.test(f.action)) ||
-        forms.find(f => /OfferFriendship|add.*friend|friend.*request/i.test(f.html + f.action)) ||
-        forms.find(f => /subscribe/i.test(f.html));
-
-      if (!actionForm) {
-        logger.warn({ profileUrl, formCount: forms.length }, "followUser: no action form found");
-        continue;
-      }
-
-      const actionUrl = actionForm.action.startsWith("http")
-        ? actionForm.action
-        : `https://mbasic.facebook.com${actionForm.action.startsWith("/") ? actionForm.action : `/${actionForm.action}`}`;
-
-      const body = new URLSearchParams();
-      appendHiddenInputs(actionForm.html, body);
-
-      const postRes = await fetch(actionUrl, {
-        method: "POST",
-        headers: {
-          "user-agent": mbasicUA,
-          "cookie": session.cookie,
-          "content-type": "application/x-www-form-urlencoded",
-          "referer": profileUrl,
-          "origin": "https://mbasic.facebook.com",
-          "accept": "text/html,*/*;q=0.9",
-        },
-        body: body.toString(),
-        redirect: "manual",
-      });
-
-      if (postRes.status === 302 || postRes.status === 301) return { ok: true };
-      if (postRes.status === 200) {
-        const postHtml = await postRes.text();
-        const hasErr = /error|failed|couldn.t|something went wrong|blocked/i.test(postHtml);
-        const hasSuccess = /following|subscribed|friend request sent|request sent|pending/i.test(postHtml);
-        if (hasSuccess) return { ok: true };
-        if (!hasErr) return { ok: true };
-      }
-    } catch (err) {
-      logger.error({ err, profileUrl }, "followUser mbasic error");
-    }
-  }
-
-  // GraphQL friend-request mutation fallback
+  // ── Fetch fresh tokens from the profile page (desktop) ────────────────────
+  let lsd = "";
+  let dtsg = "";
   try {
-    const targetProfileUrl = /^\d+$/.test(targetId)
-      ? `https://www.facebook.com/profile.php?id=${targetId}`
-      : `https://www.facebook.com/${targetId}`;
     const pageTokens = await fetchReactTokensFromPage(targetProfileUrl, session.cookie);
-    const { lsd, dtsg } = pageTokens;
-
-    if (lsd && dtsg) {
-      const friendDocIds = ["4655858601113124", "3742660159109344", "6443583062390187"];
-      for (const docId of friendDocIds) {
-        try {
-          const body = new URLSearchParams({
-            av: session.userId,
-            __user: session.userId,
-            __a: "1",
-            fb_dtsg: dtsg,
-            lsd,
-            doc_id: docId,
-            variables: JSON.stringify({
-              input: {
-                recipient_id: targetId,
-                actor_id: session.userId,
-                client_mutation_id: randomBytes(4).toString("hex"),
-              },
-            }),
-            fb_api_caller_class: "RelayModern",
-            fb_api_req_friendly_name: "FriendRequestSend",
-            server_timestamps: "true",
-          });
-
-          const gqlRes = await fetch("https://www.facebook.com/api/graphql/", {
-            method: "POST",
-            headers: {
-              "user-agent": DESKTOP_UA,
-              "accept": "*/*",
-              "content-type": "application/x-www-form-urlencoded",
-              "x-fb-friendly-name": "FriendRequestSend",
-              "x-fb-lsd": lsd,
-              "cookie": session.cookie,
-              "origin": "https://www.facebook.com",
-              "referer": targetProfileUrl,
-            },
-            body: body.toString(),
-          });
-
-          const text = await gqlRes.text();
-          const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
-          try {
-            const json = JSON.parse(clean);
-            if (json?.data && !json?.errors && !json?.error) return { ok: true };
-            if (json?.error === 1675002) continue;
-          } catch { /* ignore parse error */ }
-        } catch { /* try next doc_id */ }
-      }
-    }
+    lsd = pageTokens.lsd || session.lsd || "";
+    dtsg = pageTokens.dtsg || session.dtsg || "";
+    logger.info({ lsdLen: lsd.length, dtsgLen: dtsg.length }, "followUser tokens fetched");
   } catch (err) {
-    logger.error({ err }, "followUser graphql error");
+    logger.warn({ err }, "followUser token fetch failed, using session tokens");
+    lsd = session.lsd || "";
+    dtsg = session.dtsg || "";
   }
 
-  return { ok: false, errorMsg: "Follow/add failed — profile may be private or cookie expired" };
+  if (!dtsg || !lsd) {
+    return { ok: false, errorMsg: "Could not obtain auth tokens from profile page (cookie may be expired)" };
+  }
+
+  // ── Scan profile page bundles for current friend/follow doc_ids ───────────
+  let friendDocIds = [...KNOWN_FRIEND_DOC_IDS];
+  let pageFollowDocIds = [...KNOWN_PAGE_FOLLOW_DOC_IDS];
+  try {
+    const dynamicId = await fetchFollowDocIdFromProfileBundles(targetProfileUrl, session.cookie);
+    if (dynamicId) {
+      if (!friendDocIds.includes(dynamicId)) friendDocIds = [dynamicId, ...friendDocIds];
+      if (!pageFollowDocIds.includes(dynamicId)) pageFollowDocIds = [dynamicId, ...pageFollowDocIds];
+    }
+  } catch {
+    // ignore
+  }
+
+  const makeHeaders = (friendlyName: string) => ({
+    "user-agent": DESKTOP_UA,
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "accept-encoding": "identity",
+    "content-type": "application/x-www-form-urlencoded",
+    "x-fb-friendly-name": friendlyName,
+    "x-fb-lsd": lsd,
+    "sec-ch-ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "cookie": session.cookie,
+    "referer": targetProfileUrl,
+    "origin": "https://www.facebook.com",
+  });
+
+  const makeBaseBody = (docId: string, variables: object, friendlyName: string) => new URLSearchParams({
+    av: session.userId,
+    __user: session.userId,
+    __a: "1",
+    __req: Math.random().toString(36).substring(2, 6),
+    __hs: "19989.HYP:comet_pkg.2.1...0",
+    dpr: "1",
+    __ccg: "EXCELLENT",
+    __rev: "1018980870",
+    __s: randomBytes(3).toString("hex"),
+    __hsi: Date.now().toString(),
+    fb_dtsg: dtsg,
+    jazoest: jazoest_from_dtsg(dtsg),
+    lsd,
+    doc_id: docId,
+    variables: JSON.stringify(variables),
+    fb_api_caller_class: "RelayModern",
+    fb_api_req_friendly_name: friendlyName,
+    server_timestamps: "true",
+  });
+
+  const tryGql = async (docId: string, variables: object, friendlyName: string): Promise<boolean> => {
+    try {
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
+        method: "POST",
+        headers: makeHeaders(friendlyName),
+        body: makeBaseBody(docId, variables, friendlyName).toString(),
+        signal: AbortSignal.timeout(18000),
+      });
+      const text = await res.text();
+      logger.info({ docId, status: res.status, body: text.substring(0, 400) }, "followUser GraphQL response");
+      if (res.status !== 200) return false;
+      const clean = text.startsWith("for (;;);") ? text.slice(9) : text;
+      try {
+        const json = JSON.parse(clean);
+        const errCode = json?.error ?? json?.errors?.[0]?.extensions?.code;
+        if (errCode === 1357055 || errCode === 1675002) return false; // unknown doc_id
+        if (json?.data && !json?.errors) return true;
+      } catch {
+        if (text.includes('"data"') && !text.includes('"errors"') && !text.includes('"error"')) return true;
+      }
+    } catch { /* timeout/network */ }
+    return false;
+  };
+
+  // ── Attempt 1: FriendRequestSend (personal profile) ──────────────────────
+  for (const docId of friendDocIds) {
+    const ok = await tryGql(docId, {
+      input: {
+        recipient_id: isNumeric ? targetId : undefined,
+        actor_id: session.userId,
+        client_mutation_id: randomBytes(4).toString("hex"),
+      },
+    }, "FriendRequestSend");
+    if (ok) {
+      logger.info({ targetId, docId }, "followUser FriendRequestSend success");
+      return { ok: true };
+    }
+  }
+
+  // ── Attempt 2: PageFollow / SubscribeTo (public figures and pages) ────────
+  for (const docId of pageFollowDocIds) {
+    const ok = await tryGql(docId, {
+      input: {
+        subscribee_id: targetId,
+        actor_id: session.userId,
+        client_mutation_id: randomBytes(4).toString("hex"),
+      },
+    }, "CometProfileCometFollowMutation");
+    if (ok) {
+      logger.info({ targetId, docId }, "followUser CometProfileCometFollowMutation success");
+      return { ok: true };
+    }
+  }
+
+  // ── Attempt 3: PageFollow with page_id field ──────────────────────────────
+  for (const docId of pageFollowDocIds) {
+    const ok = await tryGql(docId, {
+      input: {
+        page_id: targetId,
+        actor_id: session.userId,
+        client_mutation_id: randomBytes(4).toString("hex"),
+      },
+    }, "PageFollowMutation");
+    if (ok) {
+      logger.info({ targetId, docId }, "followUser PageFollowMutation success");
+      return { ok: true };
+    }
+  }
+
+  return { ok: false, errorMsg: "Follow/add failed — all doc_ids tried; profile may be private, cookie expired, or target is already a friend" };
 }
 
 // ── /fb/follow ─────────────────────────────────────────────────────────────────

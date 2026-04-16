@@ -867,9 +867,6 @@ export default function Home() {
     return (
       <div className="min-h-screen bg-[#F0F2F5] p-4 text-slate-900 dark:bg-[#18191A] dark:text-slate-100">
         <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-md flex-col justify-center space-y-6">
-          <div className="flex justify-end">
-            <ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode((value) => !value)} />
-          </div>
           <div className="space-y-2 text-center">
             <div className="flex items-center justify-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1877F2] shadow-lg shadow-blue-500/20">
@@ -1424,9 +1421,9 @@ export default function Home() {
                       className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
                     >
                       {reactMutation.isPending ? (
-                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Reacting with {sessionsQuery.data?.total ?? 0} accounts...</>
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Reacting...</>
                       ) : (
-                        <><Zap className="mr-2 h-5 w-5" /> React with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                        <><Zap className="mr-2 h-5 w-5" /> React</>
                       )}
                     </Button>
 
@@ -1501,9 +1498,9 @@ export default function Home() {
                       className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
                     >
                       {commentMutation.isPending ? (
-                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Commenting with {sessionsQuery.data?.total ?? 0} accounts...</>
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Commenting...</>
                       ) : (
-                        <><MessageCircle className="mr-2 h-5 w-5" /> Comment with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                        <><MessageCircle className="mr-2 h-5 w-5" /> Comment</>
                       )}
                     </Button>
 
@@ -1577,9 +1574,9 @@ export default function Home() {
                       className="h-12 w-full rounded-2xl bg-[#1877F2] text-base font-semibold hover:bg-[#0f66d4]"
                     >
                       {followMutation.isPending ? (
-                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Following with {sessionsQuery.data?.total ?? 0} accounts...</>
+                        <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Following...</>
                       ) : (
-                        <><UserPlus className="mr-2 h-5 w-5" /> Follow/Add with {sessionsQuery.data?.total ?? 0} Account{(sessionsQuery.data?.total ?? 0) !== 1 ? "s" : ""}</>
+                        <><UserPlus className="mr-2 h-5 w-5" /> Follow</>
                       )}
                     </Button>
 
