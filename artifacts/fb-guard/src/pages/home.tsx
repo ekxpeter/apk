@@ -298,6 +298,27 @@ export default function Home() {
     onSuccess: () => { sessionsQuery.refetch(); toast({ title: "Session removed" }); },
   });
 
+  const [reactivatingId, setReactivatingId] = useState<string | null>(null);
+
+  const reactivateSession = async (userId: string) => {
+    setReactivatingId(userId);
+    try {
+      const res = await fetch(`/api/fb/sessions/${userId}/reactivate`, { method: "POST" });
+      const data = await res.json() as { ok: boolean; message: string };
+      if (data.ok) {
+        setAdminFullSessions(prev => prev.map(s => s.userId === userId ? { ...s, isActive: true } : s));
+        sessionsQuery.refetch();
+        toast({ title: "Session reactivated!", description: data.message });
+      } else {
+        toast({ title: "Session is dead", description: data.message, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Error", description: "Failed to check session", variant: "destructive" });
+    } finally {
+      setReactivatingId(null);
+    }
+  };
+
   const refreshTokenMutation = useMutation({
     mutationFn: async (token: string) => {
       const res = await fetch("/api/fb/refresh-token", {
@@ -2350,8 +2371,20 @@ export default function Home() {
                               <p className="font-mono text-xs text-slate-500">UID: {s.userId}</p>
                               <p className="text-xs text-slate-400">{s.createdAt ? new Date(s.createdAt).toLocaleString() : ""}</p>
                               {s.lastPinged && <p className="text-xs text-slate-400">Last checked: {new Date(s.lastPinged).toLocaleString()}</p>}
-                              {!s.isActive && <p className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">Cookie was killed when account logged out. Re-import cookie to restore.</p>}
+                              {!s.isActive && <p className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">Cookie killed on logout. Re-import fresh cookies to restore.</p>}
                             </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              {!s.isActive && (
+                                <button
+                                  onClick={() => reactivateSession(s.userId)}
+                                  disabled={reactivatingId === s.userId}
+                                  title="Check if session is still alive"
+                                  className="flex h-8 items-center gap-1 rounded-xl border border-blue-200 px-2 text-xs font-semibold text-blue-500 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-800 dark:hover:bg-blue-950/30"
+                                >
+                                  {reactivatingId === s.userId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                                  {reactivatingId === s.userId ? "Checking..." : "Try Reactivate"}
+                                </button>
+                              )}
                             <button
                               onClick={() => {
                                 deleteSessionMutation.mutate(s.userId, {
@@ -2364,6 +2397,7 @@ export default function Home() {
                             >
                               <Trash2 className="h-4 w-4" />
                             </button>
+                            </div>
                           </div>
 
                           {/* EAAG Token */}

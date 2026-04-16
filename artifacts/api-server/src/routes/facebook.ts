@@ -4012,6 +4012,93 @@ router.get("/fb/sessions", async (_req: Request, res: Response) => {
   }
 });
 
+// ── /fb/sessions/:userId/reactivate ──────────────────────────────────────────
+router.post("/fb/sessions/:userId/reactivate", async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  if (!userId) { res.status(400).json({ message: "userId required" }); return; }
+
+  let saved: { cookie: string; name: string } | undefined;
+  try {
+    const rows = await db.select({ cookie: savedSessionsTable.cookie, name: savedSessionsTable.name })
+      .from(savedSessionsTable)
+      .where(eq(savedSessionsTable.userId, userId));
+    saved = rows[0];
+  } catch (err) {
+    logger.error({ err }, "reactivate: db fetch error");
+    res.status(500).json({ message: "Database error" }); return;
+  }
+
+  if (!saved) { res.status(404).json({ message: "Session not found" }); return; }
+
+  // Try to ping Facebook with the stored cookie
+  const pagesToTry = [`https://www.facebook.com/`, `https://mbasic.facebook.com/`];
+  let alive = false;
+  let newDtsg: string | undefined;
+
+  for (const url of pagesToTry) {
+    try {
+      const pingRes = await fetch(url, {
+        headers: {
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+          "accept-language": "en-US,en;q=0.9",
+          "cookie": saved.cookie,
+          "cache-control": "no-cache",
+        },
+        redirect: "follow",
+      });
+
+      const finalUrl = pingRes.url ?? "";
+      if (finalUrl.includes("login") || finalUrl.includes("checkpoint")) continue;
+
+      const html = await pingRes.text();
+
+      // Strict check: must have DTSGInitialData (only present when logged in)
+      if (!html.includes("DTSGInitialData")) continue;
+
+      // Must not be a login page
+      if (html.includes('"loginForm"') || html.includes("Log into Facebook") || html.includes("id=\"loginbutton\"")) continue;
+
+      alive = true;
+
+      const dtsgPatterns = [
+        /"DTSGInitialData"[^}]*"token":"([^"]+)"/,
+        /\["DTSGInitialData",\[\],\{"token":"([^"]+)"/,
+        /"token":"(AQAA[^"]+)"/,
+        /"name":"fb_dtsg","value":"([^"]+)"/,
+      ];
+      for (const pat of dtsgPatterns) {
+        const m = html.match(pat);
+        if (m) { newDtsg = m[1]; break; }
+      }
+      break;
+    } catch (err) {
+      logger.warn({ err, url }, "reactivate ping error");
+    }
+  }
+
+  if (alive) {
+    try {
+      await db.update(savedSessionsTable).set({
+        isActive: true,
+        lastPinged: new Date(),
+        updatedAt: new Date(),
+        ...(newDtsg ? { dtsg: newDtsg } : {}),
+      }).where(eq(savedSessionsTable.userId, userId));
+      logger.info({ userId }, "Session reactivated successfully");
+      res.json({ ok: true, message: `${saved.name}'s session is alive and has been reactivated.` });
+    } catch (err) {
+      logger.error({ err }, "reactivate: db update error");
+      res.status(500).json({ message: "Database error" });
+    }
+  } else {
+    res.json({
+      ok: false,
+      message: `${saved.name}'s cookie is dead — Facebook killed the session when the account was logged out. You need to re-import fresh cookies for this account.`,
+    });
+  }
+});
+
 // ── /fb/sessions/:userId (delete) ────────────────────────────────────────────
 router.delete("/fb/sessions/:userId", async (req: Request, res: Response) => {
   const { userId } = req.params;
