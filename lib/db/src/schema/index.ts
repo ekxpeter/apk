@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, boolean } from "drizzle-orm/pg-core";
 
 export const savedSessionsTable = pgTable("saved_sessions", {
   id: serial("id").primaryKey(),
@@ -8,6 +8,8 @@ export const savedSessionsTable = pgTable("saved_sessions", {
   dtsg: text("dtsg"),
   eaagToken: text("eaag_token"),
   sessionToken: text("session_token").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  lastPinged: timestamp("last_pinged", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });

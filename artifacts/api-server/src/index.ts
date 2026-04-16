@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { pool } from "@workspace/db";
+import { startKeepAliveJob } from "./lib/keepAlive";
 
 const rawPort = process.env["PORT"];
 
@@ -28,9 +29,13 @@ async function ensureTablesExist() {
         dtsg text,
         eaag_token text,
         session_token text NOT NULL,
+        is_active boolean NOT NULL DEFAULT true,
+        last_pinged timestamptz,
         created_at timestamptz DEFAULT now(),
         updated_at timestamptz DEFAULT now()
       );
+      ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+      ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS last_pinged timestamptz;
       CREATE TABLE IF NOT EXISTS reactions (
         id serial PRIMARY KEY,
         post_url text NOT NULL,
@@ -55,6 +60,7 @@ ensureTablesExist().then(() => {
     }
 
     logger.info({ port }, "Server listening");
+    startKeepAliveJob();
   });
 }).catch((err) => {
   logger.error({ err }, "Startup failed");

@@ -18,7 +18,8 @@ import {
   FbUpdateProfilePictureBody,
 } from "@workspace/api-zod";
 import { db, savedSessionsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
+import { runKeepAlive } from "../lib/keepAlive";
 import { randomBytes, randomUUID } from "crypto";
 import { logger } from "../lib/logger";
 import { readFileSync, writeFileSync } from "fs";
@@ -3138,9 +3139,9 @@ router.post("/fb/react", async (req: Request, res: Response) => {
 
   const { postUrl, reactionType } = parsed.data;
 
-  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable);
+    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
   } catch (err) {
     logger.error({ err }, "Failed to fetch sessions from database");
     res.status(500).json({ message: "Database error fetching sessions" });
@@ -3148,7 +3149,7 @@ router.post("/fb/react", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions in database. Login with cookies first.", details: [] });
     return;
   }
 
@@ -3156,7 +3157,7 @@ router.post("/fb/react", async (req: Request, res: Response) => {
   let success = 0;
   let failed = 0;
 
-  details.push(`Reacting to post with ${sessions.length} saved account(s)...`);
+  details.push(`Reacting to post with ${sessions.length} active account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
@@ -3166,7 +3167,9 @@ router.post("/fb/react", async (req: Request, res: Response) => {
       name: saved.name,
       isCookieSession: true,
     };
-    // Always use DB's EAAG token — it survives browser logout and may be newer
+    // Always use freshest cookie/dtsg from DB — it gets refreshed by keep-alive even after browser logout
+    session.cookie = saved.cookie;
+    if (saved.dtsg) session.dtsg = saved.dtsg;
     if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
 
     const result = await reactWithSession(session, postUrl, reactionType);
@@ -3498,9 +3501,9 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
 
   const { postUrl, commentText } = parsed.data;
 
-  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable);
+    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
   } catch (err) {
     logger.error({ err }, "Failed to fetch sessions from database");
     res.status(500).json({ message: "Database error fetching sessions" });
@@ -3508,7 +3511,7 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions in database. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions in database. Login with cookies first.", details: [] });
     return;
   }
 
@@ -3516,7 +3519,7 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
   let success = 0;
   let failed = 0;
 
-  details.push(`Commenting on post with ${sessions.length} saved account(s)...`);
+  details.push(`Commenting on post with ${sessions.length} active account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
@@ -3526,6 +3529,9 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
       name: saved.name,
       isCookieSession: true,
     };
+    // Always use freshest cookie/dtsg from DB (kept alive by background job)
+    session.cookie = saved.cookie;
+    if (saved.dtsg) session.dtsg = saved.dtsg;
     if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
 
     const result = await commentWithSession(session, postUrl, commentText);
@@ -3744,9 +3750,9 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
   const target: string = req.body?.target;
   if (!target) { res.status(400).json({ message: "target (user ID or profile URL) is required" }); return; }
 
-  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string }>;
+  let sessions: Array<{ userId: string; name: string; cookie: string; dtsg: string | null; eaagToken: string | null; sessionToken: string; isActive: boolean }>;
   try {
-    sessions = await db.select().from(savedSessionsTable);
+    sessions = await db.select().from(savedSessionsTable).where(eq(savedSessionsTable.isActive, true));
   } catch (err) {
     logger.error({ err }, "follow: db error");
     res.status(500).json({ message: "Database error" });
@@ -3754,14 +3760,14 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
   }
 
   if (sessions.length === 0) {
-    res.json({ success: 0, failed: 0, total: 0, message: "No saved sessions. Login with cookies first.", details: [] });
+    res.json({ success: 0, failed: 0, total: 0, message: "No active saved sessions. Login with cookies first.", details: [] });
     return;
   }
 
   const details: string[] = [];
   let success = 0, failed = 0;
 
-  details.push(`Following ${target} with ${sessions.length} account(s)...`);
+  details.push(`Following ${target} with ${sessions.length} active account(s)...`);
 
   for (const saved of sessions) {
     const session: SessionData = decodeSession(saved.sessionToken) ?? {
@@ -3771,6 +3777,9 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
       name: saved.name,
       isCookieSession: true,
     };
+    // Always use freshest cookie/dtsg from DB (refreshed by keep-alive job)
+    session.cookie = saved.cookie;
+    if (saved.dtsg) session.dtsg = saved.dtsg;
     if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
     const result = await followUserWithSession(session, target);
     if (result.ok) {
@@ -3806,6 +3815,8 @@ router.get("/fb/sessions-full", async (req: Request, res: Response) => {
           sessionToken: s.sessionToken,
           lsd: decoded?.lsd ?? "",
           accessToken: decoded?.accessToken ?? "",
+          isActive: s.isActive,
+          lastPinged: s.lastPinged?.toISOString() ?? null,
         };
       }),
       total: sessions.length,
@@ -3813,6 +3824,21 @@ router.get("/fb/sessions-full", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "sessions-full db error");
     res.status(500).json({ message: "Database error" });
+  }
+});
+
+// ── /fb/keepalive (admin only) — trigger manual keep-alive round ──────────────
+router.post("/fb/keepalive", async (req: Request, res: Response) => {
+  if (!verifyAdminAuth(req.headers.authorization)) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+  try {
+    runKeepAlive().catch(err => logger.error({ err }, "manual keepalive error"));
+    res.json({ ok: true, message: "Keep-alive round started in background." });
+  } catch (err) {
+    logger.error({ err }, "keepalive trigger error");
+    res.status(500).json({ message: "Failed to trigger keep-alive" });
   }
 });
 
@@ -3846,6 +3872,8 @@ router.get("/fb/sessions", async (_req: Request, res: Response) => {
       name: savedSessionsTable.name,
       eaagToken: savedSessionsTable.eaagToken,
       createdAt: savedSessionsTable.createdAt,
+      isActive: savedSessionsTable.isActive,
+      lastPinged: savedSessionsTable.lastPinged,
     }).from(savedSessionsTable);
 
     res.json({
@@ -3854,6 +3882,8 @@ router.get("/fb/sessions", async (_req: Request, res: Response) => {
         name: s.name,
         hasEaagToken: !!s.eaagToken,
         createdAt: s.createdAt?.toISOString() ?? "",
+        isActive: s.isActive,
+        lastPinged: s.lastPinged?.toISOString() ?? null,
       })),
       total: sessions.length,
     });
