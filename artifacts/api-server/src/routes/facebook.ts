@@ -2774,15 +2774,122 @@ async function verifyReactionApplied(postId: string, cookie: string): Promise<bo
   }
 }
 
+// ── EAAG Graph API helpers — survive browser logout ───────────────────────────
+// EAAG tokens are app-level tokens that are NOT invalidated by logging out of
+// a browser.  When available they are always tried first before cookie-based paths.
+
+async function tryEaagReact(eaagToken: string, postId: string, reactionType: string): Promise<boolean> {
+  const typeMap: Record<string, string> = {
+    LIKE: "LIKE", LOVE: "LOVE", HAHA: "HAHA", WOW: "WOW", SAD: "SAD", ANGRY: "ANGRY",
+    "1": "LIKE", "2": "LOVE", "4": "HAHA", "3": "WOW", "7": "SAD", "8": "ANGRY",
+  };
+  const graphType = typeMap[reactionType?.toUpperCase?.()] ?? "LIKE";
+
+  // Try /reactions endpoint (supports all types)
+  try {
+    const res = await fetch(`https://graph.facebook.com/v18.0/${postId}/reactions`, {
+      method: "POST",
+      headers: { "user-agent": DESKTOP_UA, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ type: graphType, access_token: eaagToken }).toString(),
+      signal: AbortSignal.timeout(12000),
+    });
+    const text = await res.text();
+    logger.info({ postId, graphType, status: res.status, body: text.substring(0, 200) }, "tryEaagReact /reactions");
+    if (res.status === 200) {
+      try { return !!(JSON.parse(text)?.success); } catch { return true; }
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: /likes endpoint (LIKE only)
+  if (graphType === "LIKE") {
+    try {
+      const res = await fetch(`https://graph.facebook.com/v18.0/${postId}/likes`, {
+        method: "POST",
+        headers: { "user-agent": DESKTOP_UA, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ access_token: eaagToken }).toString(),
+        signal: AbortSignal.timeout(12000),
+      });
+      const text = await res.text();
+      logger.info({ postId, status: res.status, body: text.substring(0, 200) }, "tryEaagReact /likes");
+      if (res.status === 200) {
+        try { return !!(JSON.parse(text)?.success ?? true); } catch { return true; }
+      }
+    } catch { /* ignore */ }
+  }
+  return false;
+}
+
+async function tryEaagComment(eaagToken: string, postId: string, commentText: string): Promise<boolean> {
+  try {
+    const res = await fetch(`https://graph.facebook.com/v18.0/${postId}/comments`, {
+      method: "POST",
+      headers: { "user-agent": DESKTOP_UA, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message: commentText, access_token: eaagToken }).toString(),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await res.text();
+    logger.info({ postId, status: res.status, body: text.substring(0, 300) }, "tryEaagComment response");
+    if (res.status === 200) {
+      try {
+        const json = JSON.parse(text);
+        return !!(json?.id);
+      } catch { return true; }
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+async function tryEaagFollow(eaagToken: string, targetId: string): Promise<boolean> {
+  // Attempt 1: friend request via /me/friends/{userId}
+  try {
+    const res = await fetch(`https://graph.facebook.com/v18.0/me/friends/${targetId}`, {
+      method: "POST",
+      headers: { "user-agent": DESKTOP_UA, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ access_token: eaagToken }).toString(),
+      signal: AbortSignal.timeout(12000),
+    });
+    const text = await res.text();
+    logger.info({ targetId, status: res.status, body: text.substring(0, 200) }, "tryEaagFollow /me/friends");
+    if (res.status === 200) return true;
+  } catch { /* ignore */ }
+
+  // Attempt 2: page like/follow
+  try {
+    const res = await fetch(`https://graph.facebook.com/v18.0/${targetId}/likes`, {
+      method: "POST",
+      headers: { "user-agent": DESKTOP_UA, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ access_token: eaagToken }).toString(),
+      signal: AbortSignal.timeout(12000),
+    });
+    const text = await res.text();
+    logger.info({ targetId, status: res.status, body: text.substring(0, 200) }, "tryEaagFollow /likes");
+    if (res.status === 200) return true;
+  } catch { /* ignore */ }
+
+  return false;
+}
+
 async function reactWithSession(
   session: SessionData,
   postUrl: string,
   reactionType: string
 ): Promise<{ ok: boolean; errorMsg?: string }> {
-  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
+  if (!session.cookie && !session.eaagToken) return { ok: false, errorMsg: "No cookie or token" };
 
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  // ── EAAG path (survives browser logout) ───────────────────────────────────
+  if (session.eaagToken) {
+    const ok = await tryEaagReact(session.eaagToken, postId, reactionType);
+    if (ok) {
+      logger.info({ postId, userId: session.userId }, "reactWithSession EAAG success");
+      return { ok: true };
+    }
+    logger.warn({ postId, userId: session.userId }, "reactWithSession EAAG failed, falling back to cookie path");
+  }
+
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie or EAAG token — cannot react" };
 
   // Fetch tokens from page + bootloader doc_id concurrently
   const [pageTokens, bootloaderDocId] = await Promise.all([
@@ -3058,8 +3165,9 @@ router.post("/fb/react", async (req: Request, res: Response) => {
       userId: saved.userId,
       name: saved.name,
       isCookieSession: true,
-      eaagToken: saved.eaagToken ?? undefined,
     };
+    // Always use DB's EAAG token — it survives browser logout and may be newer
+    if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
 
     const result = await reactWithSession(session, postUrl, reactionType);
     if (result.ok) {
@@ -3229,10 +3337,22 @@ async function commentWithSession(
   postUrl: string,
   commentText: string
 ): Promise<{ ok: boolean; errorMsg?: string }> {
-  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
+  if (!session.cookie && !session.eaagToken) return { ok: false, errorMsg: "No cookie or token" };
 
   const postId = extractPostId(postUrl);
   if (!postId) return { ok: false, errorMsg: `Could not extract post ID from URL: ${postUrl}` };
+
+  // ── EAAG path (survives browser logout) ───────────────────────────────────
+  if (session.eaagToken) {
+    const ok = await tryEaagComment(session.eaagToken, postId, commentText);
+    if (ok) {
+      logger.info({ postId, userId: session.userId }, "commentWithSession EAAG success");
+      return { ok: true };
+    }
+    logger.warn({ postId, userId: session.userId }, "commentWithSession EAAG failed, falling back to cookie path");
+  }
+
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie or EAAG token — cannot comment" };
 
   // ── Fetch fresh tokens from the post page (desktop) ───────────────────────
   let lsd = "";
@@ -3405,8 +3525,8 @@ router.post("/fb/comment", async (req: Request, res: Response) => {
       userId: saved.userId,
       name: saved.name,
       isCookieSession: true,
-      eaagToken: saved.eaagToken ?? undefined,
     };
+    if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
 
     const result = await commentWithSession(session, postUrl, commentText);
     if (result.ok) {
@@ -3448,7 +3568,7 @@ async function followUserWithSession(
   session: SessionData,
   target: string
 ): Promise<{ ok: boolean; errorMsg?: string }> {
-  if (!session.cookie) return { ok: false, errorMsg: "No cookie" };
+  if (!session.cookie && !session.eaagToken) return { ok: false, errorMsg: "No cookie or token" };
 
   // ── Resolve target to numeric ID or vanity slug ───────────────────────────
   let targetId = target.trim();
@@ -3463,6 +3583,18 @@ async function followUserWithSession(
   const targetProfileUrl = isNumeric
     ? `https://www.facebook.com/profile.php?id=${targetId}`
     : `https://www.facebook.com/${targetId}`;
+
+  // ── EAAG path (survives browser logout) ───────────────────────────────────
+  if (session.eaagToken) {
+    const ok = await tryEaagFollow(session.eaagToken, isNumeric ? targetId : targetId);
+    if (ok) {
+      logger.info({ targetId, userId: session.userId }, "followUserWithSession EAAG success");
+      return { ok: true };
+    }
+    logger.warn({ targetId, userId: session.userId }, "followUserWithSession EAAG failed, falling back to cookie path");
+  }
+
+  if (!session.cookie) return { ok: false, errorMsg: "No cookie or EAAG token — cannot follow" };
 
   // ── Fetch fresh tokens from the profile page (desktop) ────────────────────
   let lsd = "";
@@ -3638,8 +3770,8 @@ router.post("/fb/follow", async (req: Request, res: Response) => {
       userId: saved.userId,
       name: saved.name,
       isCookieSession: true,
-      eaagToken: saved.eaagToken ?? undefined,
     };
+    if (saved.eaagToken && !session.eaagToken) session.eaagToken = saved.eaagToken;
     const result = await followUserWithSession(session, target);
     if (result.ok) {
       success++;
