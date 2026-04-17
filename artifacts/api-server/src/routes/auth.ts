@@ -21,7 +21,10 @@ router.post("/auth/register", async (req: Request, res: Response) => {
   }
   const client = await pool.connect();
   try {
-    const existing = await client.query("SELECT id FROM app_users WHERE username = $1", [username.toLowerCase()]);
+    const existing = await client.query(
+      "SELECT id FROM app_users WHERE username = $1",
+      [username.toLowerCase()]
+    );
     if (existing.rows.length > 0) {
       res.status(409).json({ message: "Username already taken" });
       return;
@@ -49,7 +52,10 @@ router.post("/auth/login", async (req: Request, res: Response) => {
   }
   const client = await pool.connect();
   try {
-    const result = await client.query("SELECT id, username, password_hash FROM app_users WHERE username = $1", [username.toLowerCase()]);
+    const result = await client.query(
+      "SELECT id, username, password_hash FROM app_users WHERE username = $1",
+      [username.toLowerCase()]
+    );
     if (result.rows.length === 0) {
       res.status(401).json({ message: "Invalid username or password" });
       return;
@@ -74,7 +80,7 @@ router.post("/auth/login", async (req: Request, res: Response) => {
 
 router.post("/auth/logout", (req: Request, res: Response) => {
   req.session.destroy(() => {
-    res.clearCookie("fbguard.sid");
+    res.clearCookie("fbhandling.sid");
     res.json({ message: "Logged out" });
   });
 });

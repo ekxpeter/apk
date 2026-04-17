@@ -40,7 +40,7 @@ export default function Login() {
           <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 mb-4 shadow-2xl border border-white/20">
             <Facebook className="w-10 h-10 text-white" />
           </div>
-          <h1 className="text-3xl font-black text-white tracking-tight">FBGuard</h1>
+          <h1 className="text-3xl font-black text-white tracking-tight">Fb Handling</h1>
           <p className="text-white/70 text-sm mt-1">Mass Automation Panel</p>
         </div>
 
@@ -114,7 +114,7 @@ export default function Login() {
           </div>
         </div>
 
-        <p className="text-center text-white/40 text-xs mt-6">FBGuard &copy; {new Date().getFullYear()}</p>
+        <p className="text-center text-white/40 text-xs mt-6">Fb Handling &copy; {new Date().getFullYear()}</p>
       </div>
     </div>
   );

@@ -3,10 +3,14 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import cookieParser from "cookie-parser";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { pool } from "@workspace/db";
 
-const SESSION_SECRET = process.env["SESSION_SECRET"] || "fbguard-super-secret-change-me-in-prod-2024";
+const SESSION_SECRET = process.env["SESSION_SECRET"] || "fbhandling-super-secret-change-me-2024";
+
+const PgStore = connectPgSimple(session);
 
 const app: Express = express();
 
@@ -36,7 +40,11 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(
   session({
-    name: "fbguard.sid",
+    name: "fbhandling.sid",
+    store: new PgStore({
+      pool,
+      tableName: "user_sessions",
+    }),
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,

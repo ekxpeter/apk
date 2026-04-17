@@ -544,7 +544,7 @@ export default function Dashboard() {
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Facebook className="w-6 h-6 text-white" />
-            <span className="text-white font-black text-lg tracking-tight">FBGuard</span>
+            <span className="text-white font-black text-lg tracking-tight">Fb Handling</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right hidden sm:block">

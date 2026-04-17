@@ -4245,4 +4245,32 @@ router.post("/fb/refresh-token", async (req: Request, res: Response) => {
   }
 });
 
+// ── Exported helpers for use by actions.ts ────────────────────────────────────
+export async function reactWithCookieOnly(
+  cookie: string, postUrl: string, reactionType: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  const cUserMatch = cookie.match(/c_user=(\d+)/);
+  const userId = cUserMatch?.[1] ?? "";
+  const session: SessionData = { cookie, dtsg: "", userId, name: "stored", isCookieSession: true };
+  return reactWithSession(session, postUrl, reactionType);
+}
+
+export async function commentWithCookieOnly(
+  cookie: string, postUrl: string, commentText: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  const cUserMatch = cookie.match(/c_user=(\d+)/);
+  const userId = cUserMatch?.[1] ?? "";
+  const session: SessionData = { cookie, dtsg: "", userId, name: "stored", isCookieSession: true };
+  return commentWithSession(session, postUrl, commentText);
+}
+
+export async function followWithCookieOnly(
+  cookie: string, targetUrl: string
+): Promise<{ ok: boolean; errorMsg?: string }> {
+  const cUserMatch = cookie.match(/c_user=(\d+)/);
+  const userId = cUserMatch?.[1] ?? "";
+  const session: SessionData = { cookie, dtsg: "", userId, name: "stored", isCookieSession: true };
+  return followUserWithSession(session, targetUrl);
+}
+
 export default router;

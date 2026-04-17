@@ -60,6 +60,13 @@ async function ensureTablesExist() {
         is_active boolean NOT NULL DEFAULT true,
         created_at timestamptz DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        sid varchar NOT NULL COLLATE "default",
+        sess json NOT NULL,
+        expire timestamp(6) NOT NULL,
+        CONSTRAINT user_sessions_pkey PRIMARY KEY (sid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_expire ON user_sessions (expire);
     `);
     logger.info("Database tables verified/created");
   } catch (err) {
