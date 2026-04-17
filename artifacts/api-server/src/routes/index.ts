@@ -4,6 +4,7 @@ import facebookRouter from "./facebook";
 import authRouter from "./auth";
 import accountsRouter from "./accounts";
 import actionsRouter from "./actions";
+import adminRouter from "./admin";
 
 const router: IRouter = Router();
 
@@ -11,6 +12,7 @@ router.use(healthRouter);
 router.use(authRouter);
 router.use(accountsRouter);
 router.use(actionsRouter);
+router.use(adminRouter);
 router.use(facebookRouter);
 
 export default router;
