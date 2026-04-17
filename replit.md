@@ -27,9 +27,26 @@ Primary product is Facebook Guard, a web app with an Express API for Facebook ac
 
 ## Facebook Guard
 
-- Frontend: `artifacts/fb-guard/src/pages/home.tsx`
-- API routes: `artifacts/api-server/src/routes/facebook.ts`
-- API contract: `lib/api-spec/openapi.yaml`
-- Generated client/schemas are regenerated with `pnpm --filter @workspace/api-spec run codegen`
+### Authentication (App-level)
+- Register/Login with username + password (bcrypt hashed), session stored via express-session cookie
+- Routes: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
+- Frontend pages: `artifacts/fb-guard/src/pages/login.tsx`, `artifacts/fb-guard/src/pages/register.tsx`
+
+### Dashboard
+- Main protected page: `artifacts/fb-guard/src/pages/dashboard.tsx`
+- Shows 3 Facebook cookie account pools: FRA, RPW, Normal
+- Users add raw Facebook cookies categorized by type; FB name/uid auto-detected on add
+- Action Panel: react/comment/follow with target URL, cookie pool selection, account count slider, reaction type picker
+
+### API Routes
+- Auth: `artifacts/api-server/src/routes/auth.ts`
+- Cookie account management: `artifacts/api-server/src/routes/accounts.ts` (`GET /api/accs`, `POST /api/accs/add`, `DELETE /api/accs/:id`)
+- Multi-account actions: `artifacts/api-server/src/routes/actions.ts` (`POST /api/actions/react|comment|follow`)
+- Facebook scraping: `artifacts/api-server/src/routes/facebook.ts`
+
+### DB Tables
+- `app_users` — app login users
+- `fb_cookie_accounts` — Facebook session cookies per user, typed as fra/rpw/normal
+- `saved_sessions` — legacy Facebook sessions (for existing features)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

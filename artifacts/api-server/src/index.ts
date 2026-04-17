@@ -43,6 +43,23 @@ async function ensureTablesExist() {
         reaction_type text NOT NULL DEFAULT 'LIKE',
         reacted_at timestamptz DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS app_users (
+        id serial PRIMARY KEY,
+        username text NOT NULL UNIQUE,
+        password_hash text NOT NULL,
+        created_at timestamptz DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS fb_cookie_accounts (
+        id serial PRIMARY KEY,
+        app_user_id integer NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        cookie text NOT NULL,
+        cookie_type text NOT NULL CHECK (cookie_type IN ('fra', 'rpw', 'normal')),
+        label text NOT NULL DEFAULT '',
+        fb_user_id text NOT NULL DEFAULT '',
+        fb_name text NOT NULL DEFAULT '',
+        is_active boolean NOT NULL DEFAULT true,
+        created_at timestamptz DEFAULT now()
+      );
     `);
     logger.info("Database tables verified/created");
   } catch (err) {
