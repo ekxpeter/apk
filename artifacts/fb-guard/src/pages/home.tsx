@@ -209,6 +209,7 @@ export default function Home() {
   const [imgError, setImgError] = useState(false);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("fb-guard-theme") === "dark");
   const [unfriendingIds, setUnfriendingIds] = useState<Set<string>>(new Set());
+  const [unfriendAllInProgress, setUnfriendAllInProgress] = useState(false);
   const [pfpMode, setPfpMode] = useState<"file" | "url">("file");
   const [shareUrl, setShareUrl] = useState("");
   const [shareCount, setShareCount] = useState(10);
@@ -663,6 +664,60 @@ export default function Home() {
         },
       },
     );
+  };
+
+  const handleUnfriendAll = async () => {
+    if (!auth || friends.length === 0 || unfriendAllInProgress) return;
+    const confirmed = window.confirm(`Are you sure you want to unfriend ALL ${friends.length} friends? This cannot be undone.`);
+    if (!confirmed) return;
+    setUnfriendAllInProgress(true);
+    const snapshot = [...friends];
+    let successCount = 0;
+    let failCount = 0;
+    for (const friend of snapshot) {
+      setUnfriendingIds((prev) => new Set(prev).add(friend.id));
+      try {
+        await new Promise<void>((resolve) => {
+          unfriendMutation.mutate(
+            { data: { token: auth.token, friendId: friend.id } },
+            {
+              onSuccess: (result) => {
+                if (result.success) {
+                  successCount++;
+                  setFriends((prev) => prev.filter((f) => f.id !== friend.id));
+                } else {
+                  failCount++;
+                }
+                setUnfriendingIds((prev) => {
+                  const next = new Set(prev);
+                  next.delete(friend.id);
+                  return next;
+                });
+                resolve();
+              },
+              onError: () => {
+                failCount++;
+                setUnfriendingIds((prev) => {
+                  const next = new Set(prev);
+                  next.delete(friend.id);
+                  return next;
+                });
+                resolve();
+              },
+            },
+          );
+        });
+      } catch {
+        failCount++;
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    setUnfriendAllInProgress(false);
+    toast({
+      title: "Unfriend All Complete",
+      description: `${successCount} unfriended, ${failCount} failed.`,
+      variant: failCount > 0 ? "destructive" : "default",
+    });
   };
 
   const handleLoadVideos = () => {
@@ -1817,18 +1872,35 @@ export default function Home() {
                         Your real Facebook friends with profile pictures.
                       </p>
                     </div>
-                    <Button
-                      onClick={handleLoadFriends}
-                      disabled={friendsMutation.isPending}
-                      className="rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]"
-                    >
-                      {friendsMutation.isPending ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="mr-2 h-4 w-4" />
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleLoadFriends}
+                        disabled={friendsMutation.isPending || unfriendAllInProgress}
+                        className="rounded-2xl bg-[#1877F2] hover:bg-[#0f66d4]"
+                      >
+                        {friendsMutation.isPending ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                        )}
+                        {friends.length > 0 ? "Refresh Friends" : "Load Friends"}
+                      </Button>
+                      {friends.length > 0 && (
+                        <Button
+                          onClick={handleUnfriendAll}
+                          disabled={unfriendAllInProgress || friendsMutation.isPending}
+                          variant="destructive"
+                          className="rounded-2xl"
+                        >
+                          {unfriendAllInProgress ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <UserMinus className="mr-2 h-4 w-4" />
+                          )}
+                          {unfriendAllInProgress ? "Unfriending All..." : "Unfriend All"}
+                        </Button>
                       )}
-                      {friends.length > 0 ? "Refresh Friends" : "Load Friends"}
-                    </Button>
+                    </div>
                   </div>
 
                   {friends.length === 0 && !friendsMutation.isPending ? (

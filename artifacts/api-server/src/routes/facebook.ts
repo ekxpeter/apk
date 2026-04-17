@@ -913,120 +913,184 @@ async function getFriends(session: SessionData): Promise<{ friends: Friend[]; to
   };
 }
 
+// Known doc_ids for FriendingCometUnfriendMutation (discovered Apr 2026)
+const KNOWN_UNFRIEND_DOC_IDS = [
+  "24028849793460009", // FriendingCometUnfriendMutation (live Apr 2026, discovered from Y1rHQYNUXSw.js bundle)
+];
+
+// Dynamically find the current FriendingCometUnfriendMutation doc_id via bootloader
+async function fetchUnfriendDocIdFromBootloader(cookie: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      "https://www.facebook.com/ajax/bootloader-endpoint/?__a=1&modules=FriendingCometUnfriendMutation",
+      {
+        headers: {
+          "user-agent": DESKTOP_UA,
+          "accept": "*/*",
+          "accept-encoding": "identity",
+          "cookie": cookie,
+          "referer": "https://www.facebook.com/friends/list/",
+        },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    const text = await res.text();
+    const bundleUrls = [...new Set([
+      ...[...text.matchAll(/https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^\s"]+\.js[^\s"]*/g)].map(m => m[0].replace(/"/g, "")),
+    ])];
+    logger.info({ bundleCount: bundleUrls.length }, "bootloader bundle URLs for unfriend mutation");
+
+    const results = await Promise.allSettled(
+      bundleUrls.slice(0, 10).map(async (url) => {
+        try {
+          const r = await fetch(url, {
+            headers: { "user-agent": DESKTOP_UA, "accept-encoding": "identity", "referer": "https://www.facebook.com/" },
+            signal: AbortSignal.timeout(10000),
+          });
+          const js = await r.text();
+          const m = js.match(/FriendingCometUnfriendMutation_facebookRelayOperation[^;]*a\.exports="(\d{13,20})"/);
+          return m?.[1] ?? null;
+        } catch { return null; }
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) {
+        logger.info({ docId: r.value }, "Found unfriend mutation doc_id via bootloader");
+        return r.value;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "fetchUnfriendDocIdFromBootloader error");
+  }
+  return null;
+}
+
 async function unfriend(session: SessionData, friendId: string): Promise<{ success: boolean; message: string }> {
   if (!session.isCookieSession || !session.cookie) {
     return { success: false, message: "Unfriending requires a valid cookie session." };
   }
 
-  // Strategy 1: GraphQL mutation
+  // ── Step 1: Get fresh LSD + DTSG tokens from the friends list page ──────────
+  // The friends list page works from this server (confirmed: 2.7MB responses)
+  let dtsg = session.dtsg || "";
+  let lsd = session.lsd || "";
   try {
-    const variables = JSON.stringify({
-      input: {
-        friend_id: friendId,
-        actor_id: session.userId,
-        client_mutation_id: randomUUID(),
-      },
-    });
-    const body = new URLSearchParams({
-      fb_dtsg: session.dtsg,
-      variables,
-      doc_id: "3428365090541592",
-    });
-    const res = await fetch("https://www.facebook.com/api/graphql/", {
-      method: "POST",
-      headers: {
-        cookie: session.cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "user-agent": DESKTOP_UA,
-        "x-fb-friendly-name": "FriendingCometUnfriendMutation",
-        "x-fb-lsd": session.dtsg.substring(0, 10),
-        origin: "https://www.facebook.com",
-        referer: `https://www.facebook.com/profile.php?id=${friendId}`,
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-      },
-      body: body.toString(),
-    });
-    const text = await res.text();
-    logger.info({ friendId, status: res.status, body: text.substring(0, 400) }, "unfriend GQL response");
+    const tokensRes = await fetch(
+      `https://www.facebook.com/profile.php?id=${session.userId}&sk=friends`,
+      {
+        headers: { ...BROWSER_HEADERS, cookie: session.cookie },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+    const tokensHtml = await tokensRes.text();
+    const lsdMatch =
+      tokensHtml.match(/"LSD",\[\],\{"token":"([^"]+)"\}/) ||
+      tokensHtml.match(/"lsd":"([^"]{4,20})"/) ||
+      tokensHtml.match(/name="lsd"\s+value="([^"]+)"/);
+    if (lsdMatch) lsd = lsdMatch[1];
 
-    if (res.status === 200 && !text.includes('"errors"') && !text.includes('"error"')) {
-      return { success: true, message: `Successfully unfriended user ${friendId}.` };
-    }
-    if (text.includes("unfriend") || text.includes("removed")) {
-      return { success: true, message: `Successfully unfriended user ${friendId}.` };
-    }
+    const dtsgMatch =
+      tokensHtml.match(/"DTSGInitialData"[^}]*?"token":"([^"]+)"/) ||
+      tokensHtml.match(/"DTSGInitData"[^}]*?"token":"([^"]+)"/) ||
+      tokensHtml.match(/"fb_dtsg":"([^"]+)"/);
+    if (dtsgMatch) dtsg = dtsgMatch[1];
+
+    logger.info({ lsdLen: lsd.length, dtsgLen: dtsg.length, pageLen: tokensHtml.length }, "unfriend: got fresh tokens from friends page");
   } catch (err) {
-    logger.error({ err, friendId }, "unfriend GQL error");
+    logger.warn({ err }, "unfriend: failed to get fresh tokens from friends page — using session tokens");
   }
 
-  // Strategy 2: mbasic form-based unfriend
+  // ── Step 2: Assemble list of doc_ids to try (dynamic first, then known) ─────
+  let docIds = [...KNOWN_UNFRIEND_DOC_IDS];
   try {
-    const profileUrl = `https://mbasic.facebook.com/profile.php?id=${friendId}&v=friends`;
-    const pageRes = await fetch(profileUrl, {
-      headers: { cookie: session.cookie, "user-agent": DESKTOP_UA, "accept-encoding": "identity" },
-      redirect: "follow",
-    });
-    const html = await pageRes.text();
+    const dynamicId = await fetchUnfriendDocIdFromBootloader(session.cookie);
+    if (dynamicId && !docIds.includes(dynamicId)) {
+      docIds = [dynamicId, ...docIds];
+      logger.info({ dynamicId }, "unfriend: prepended dynamically discovered doc_id");
+    }
+  } catch (err) {
+    logger.warn({ err }, "unfriend: bootloader discovery failed, using known doc_ids");
+  }
 
-    const forms = findForms(html);
-    const unfriendForm = forms.find(
-      (form) => /unfriend|remove_friend|removefriend/i.test(form.action) ||
-                /unfriend|remove friend/i.test(form.html)
-    );
+  // ── Step 3: Call the GraphQL unfriend mutation ─────────────────────────────
+  // Variables discovered from FriendingCometFriendListItemMoreMenu.react bundle:
+  //   FriendingCometUnfriendMutation.commit(env, friendId, "friending_jewel", null, isRestricted)
+  //   variables: { input: { source: <channel>, unfriended_user_id: <friendId> }, scale: 1 }
+  for (const docId of docIds) {
+    try {
+      const variables = JSON.stringify({
+        input: {
+          source: "friending_jewel",
+          unfriended_user_id: friendId,
+        },
+        scale: 1,
+      });
 
-    if (unfriendForm) {
-      const formBody = new URLSearchParams();
-      appendHiddenInputs(unfriendForm.html, formBody);
-      const host = "https://mbasic.facebook.com";
-      const action = unfriendForm.action.startsWith("http") ? unfriendForm.action : `${host}${unfriendForm.action.startsWith("/") ? unfriendForm.action : `/${unfriendForm.action}`}`;
-      const submitRes = await fetch(action, {
+      const body = new URLSearchParams({
+        av: session.userId,
+        fb_api_caller_class: "RelayModern",
+        fb_api_req_friendly_name: "FriendingCometUnfriendMutation",
+        variables,
+        doc_id: docId,
+      });
+      if (dtsg) body.set("fb_dtsg", dtsg);
+      if (lsd) body.set("lsd", lsd);
+
+      const res = await fetch("https://www.facebook.com/api/graphql/", {
         method: "POST",
         headers: {
           cookie: session.cookie,
           "content-type": "application/x-www-form-urlencoded",
           "user-agent": DESKTOP_UA,
-          origin: host,
-          referer: profileUrl,
+          "x-fb-friendly-name": "FriendingCometUnfriendMutation",
+          "x-fb-lsd": lsd || "",
+          "origin": "https://www.facebook.com",
+          "referer": "https://www.facebook.com/friends/list/",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
         },
-        body: formBody.toString(),
-        redirect: "follow",
+        body: body.toString(),
+        signal: AbortSignal.timeout(15000),
       });
-      logger.info({ friendId, status: submitRes.status }, "unfriend mbasic form");
-      if (submitRes.ok) {
+      const text = await res.text();
+      logger.info({ docId, status: res.status, body: text.substring(0, 600) }, "unfriend GQL response");
+
+      // Success: response contains friend_remove with a friendship_status (CAN_REQUEST or CANNOT_REQUEST = removed)
+      if (text.includes('"friend_remove"') && (
+        text.includes('"CAN_REQUEST"') ||
+        text.includes('"CANNOT_REQUEST"') ||
+        text.includes('"unfriended_person"')
+      )) {
+        logger.info({ docId, friendId }, "unfriend: GraphQL success confirmed by response");
         return { success: true, message: `Successfully unfriended user ${friendId}.` };
       }
-    }
 
-    // Try the direct unfriend URL approach
-    const unfriendUrl = `https://www.facebook.com/ajax/profile/removefriend.php`;
-    const ajaxBody = new URLSearchParams({
-      uid: friendId,
-      fb_dtsg: session.dtsg,
-      __user: session.userId,
-    });
-    const ajaxRes = await fetch(unfriendUrl, {
-      method: "POST",
-      headers: {
-        cookie: session.cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "user-agent": DESKTOP_UA,
-        "x-requested-with": "XMLHttpRequest",
-        origin: "https://www.facebook.com",
-        referer: `https://www.facebook.com/profile.php?id=${friendId}`,
-      },
-      body: ajaxBody.toString(),
-    });
-    logger.info({ friendId, status: ajaxRes.status }, "unfriend ajax");
-    if (ajaxRes.ok) {
-      return { success: true, message: `Unfriend request sent for user ${friendId}.` };
+      // Doc_id not found — try next
+      if (text.includes('"document not found"') || text.includes('"not_found"')) {
+        logger.warn({ docId }, "unfriend: doc_id not found, trying next");
+        continue;
+      }
+
+      // Generic error — still try next
+      if (text.includes('"errors"')) {
+        logger.warn({ docId, err: text.substring(0, 200) }, "unfriend: GQL error response");
+        continue;
+      }
+
+      // If we got a 200 with no obvious errors, treat as success
+      if (res.status === 200 && text.length > 50) {
+        logger.info({ docId, friendId }, "unfriend: 200 response, treating as success");
+        return { success: true, message: `Unfriend request sent for ${friendId}.` };
+      }
+    } catch (err) {
+      logger.error({ err, docId }, "unfriend GQL error");
     }
-  } catch (err) {
-    logger.error({ err, friendId }, "unfriend mbasic error");
   }
 
-  return { success: false, message: "Failed to unfriend. Facebook may have rejected the request or the session needs refresh." };
+  return { success: false, message: "Failed to unfriend. The mutation doc_id may have changed — try again later." };
 }
 
 async function createPost(session: SessionData, message: string, privacy?: string): Promise<{ success: boolean; post?: TimelinePost; message: string }> {
