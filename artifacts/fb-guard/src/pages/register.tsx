@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { Loader2, Lock, User, Facebook, CheckCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { localRegister } from "@/lib/localAuth";
 
 export default function Register() {
   const [, navigate] = useLocation();
@@ -21,21 +22,36 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      const res = await apiFetch("/api/auth/register", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.message || "Registration failed");
-        return;
+      let serverOk = false;
+      try {
+        const res = await apiFetch("/api/auth/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({} as any));
+        if (res.ok) {
+          serverOk = true;
+        } else if (res.status === 409 || /exist/i.test(data?.message || "")) {
+          setError(data.message || "Username already exists");
+          return;
+        }
+      } catch {
+        // server unreachable -> fall back to local registration
       }
+
+      try {
+        await localRegister(username, password);
+      } catch (e: any) {
+        if (!serverOk) {
+          setError(e?.message || "Registration failed");
+          return;
+        }
+      }
+
       setDone(true);
-      setTimeout(() => navigate("/login"), 2000);
-    } catch {
-      setError("Network error. Please try again.");
+      setTimeout(() => navigate("/login"), 1500);
     } finally {
       setLoading(false);
     }

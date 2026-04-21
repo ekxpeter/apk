@@ -8,7 +8,9 @@ import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import Dashboard from "@/pages/dashboard";
+import SplashIntro from "@/components/SplashIntro";
 import { apiFetch } from "@/lib/api";
+import { getLocalSession } from "@/lib/localAuth";
 
 const queryClient = new QueryClient();
 
@@ -17,13 +19,35 @@ function AuthRedirect() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
+    let done = false;
+    const finish = (path: string) => {
+      if (done) return;
+      done = true;
+      setChecking(false);
+      navigate(path);
+    };
+
+    const timeout = setTimeout(() => {
+      const local = getLocalSession();
+      finish(local ? "/dashboard" : "/login");
+    }, 3500);
+
     apiFetch("/api/auth/me", { credentials: "include" })
-      .then(r => {
-        if (r.ok) navigate("/dashboard");
-        else navigate("/login");
+      .then((r) => {
+        clearTimeout(timeout);
+        if (r.ok) finish("/dashboard");
+        else {
+          const local = getLocalSession();
+          finish(local ? "/dashboard" : "/login");
+        }
       })
-      .catch(() => navigate("/login"))
-      .finally(() => setChecking(false));
+      .catch(() => {
+        clearTimeout(timeout);
+        const local = getLocalSession();
+        finish(local ? "/dashboard" : "/login");
+      });
+
+    return () => clearTimeout(timeout);
   }, []);
 
   if (checking) {
@@ -49,9 +73,22 @@ function Router() {
 }
 
 function App() {
+  const [showSplash, setShowSplash] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !sessionStorage.getItem("fbg_splash_shown");
+  });
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
+        {showSplash && (
+          <SplashIntro
+            onDone={() => {
+              sessionStorage.setItem("fbg_splash_shown", "1");
+              setShowSplash(false);
+            }}
+          />
+        )}
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
           <Router />
         </WouterRouter>

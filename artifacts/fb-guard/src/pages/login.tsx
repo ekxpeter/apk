@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { Loader2, Lock, User, Facebook } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { localLogin, setLocalSession } from "@/lib/localAuth";
 
 export default function Login() {
   const [, navigate] = useLocation();
@@ -15,20 +16,31 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      const res = await apiFetch("/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.message || "Login failed");
-        return;
+      try {
+        const res = await apiFetch("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({} as any));
+        if (res.ok) {
+          setLocalSession(username.trim().toLowerCase());
+          navigate("/dashboard");
+          return;
+        }
+        // server reachable but rejected -> still try local in case user
+        // registered offline previously
+      } catch {
+        // server unreachable -> fall back to local login
       }
-      navigate("/dashboard");
-    } catch {
-      setError("Network error. Please try again.");
+
+      try {
+        await localLogin(username, password);
+        navigate("/dashboard");
+      } catch (e: any) {
+        setError(e?.message || "Login failed");
+      }
     } finally {
       setLoading(false);
     }

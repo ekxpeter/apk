@@ -99,39 +99,103 @@ jobs:
         working-directory: ${{ env.APP_DIR }}/android
         run: chmod +x ./gradlew
 
-      - name: Build debug APK with Gradle
-        working-directory: ${{ env.APP_DIR }}/android
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Decode signing keystore (optional)
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "${{ env.APP_DIR }}/android/app/release.keystore"
+            echo "have_keystore=true" >> "$GITHUB_OUTPUT"
+            echo "Keystore decoded."
+          else
+            echo "have_keystore=false" >> "$GITHUB_OUTPUT"
+            echo "No keystore secret provided — release APK will be auto-signed with a generated debug-style keystore."
+            keytool -genkeypair -v \
+              -keystore "${{ env.APP_DIR }}/android/app/release.keystore" \
+              -alias fbguard -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass fbguard -keypass fbguard \
+              -dname "CN=Facebook Guard, OU=App, O=FbGuard, L=NA, ST=NA, C=US"
+          fi
 
-      - name: Locate APK
+      - name: Configure signing in Gradle
+        working-directory: ${{ env.APP_DIR }}/android
+        env:
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          HAVE_KS: ${{ steps.keystore.outputs.have_keystore }}
+        run: |
+          ALIAS="${KEY_ALIAS:-fbguard}"
+          KP="${KEY_PASSWORD:-fbguard}"
+          SP="${STORE_PASSWORD:-fbguard}"
+          cat > app/signing.gradle <<EOF
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file('release.keystore')
+                      storePassword '$SP'
+                      keyAlias '$ALIAS'
+                      keyPassword '$KP'
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                  }
+              }
+          }
+          EOF
+          if ! grep -q "apply from: 'signing.gradle'" app/build.gradle; then
+            echo "" >> app/build.gradle
+            echo "apply from: 'signing.gradle'" >> app/build.gradle
+          fi
+
+      - name: Build debug + release APK with Gradle
+        working-directory: ${{ env.APP_DIR }}/android
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+
+      - name: Locate APKs
         id: apk
         run: |
-          APK_PATH=$(find ${{ env.APP_DIR }}/android/app/build/outputs/apk -name "*.apk" | head -n1)
-          if [ -z "$APK_PATH" ]; then
-            echo "No APK produced" >&2
+          DEBUG_APK=$(find ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug -name "*.apk" | head -n1)
+          RELEASE_APK=$(find ${{ env.APP_DIR }}/android/app/build/outputs/apk/release -name "*.apk" | head -n1)
+          if [ -z "$DEBUG_APK" ] || [ -z "$RELEASE_APK" ]; then
+            echo "Missing APK output" >&2
+            ls -R ${{ env.APP_DIR }}/android/app/build/outputs/apk || true
             exit 1
           fi
-          NEW_NAME="fb-guard-${{ github.run_number }}.apk"
-          cp "$APK_PATH" "$NEW_NAME"
-          echo "apk_path=$NEW_NAME" >> "$GITHUB_OUTPUT"
-          echo "apk_size=$(du -h "$NEW_NAME" | cut -f1)" >> "$GITHUB_OUTPUT"
-          ls -lh "$NEW_NAME"
+          DEBUG_NAME="fb-guard-${{ github.run_number }}-debug.apk"
+          RELEASE_NAME="fb-guard-${{ github.run_number }}-release.apk"
+          cp "$DEBUG_APK" "$DEBUG_NAME"
+          cp "$RELEASE_APK" "$RELEASE_NAME"
+          echo "debug_apk=$DEBUG_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_apk=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$(du -h "$RELEASE_NAME" | cut -f1)" >> "$GITHUB_OUTPUT"
+          ls -lh "$DEBUG_NAME" "$RELEASE_NAME"
 
-      - name: Smoke test APK
+      - name: Smoke test APKs
         run: |
-          APK="${{ steps.apk.outputs.apk_path }}"
-          echo "Verifying APK structure..."
-          unzip -l "$APK" | head -n 30
-          unzip -l "$APK" | grep -q "AndroidManifest.xml" || { echo "Missing AndroidManifest.xml"; exit 1; }
-          unzip -l "$APK" | grep -q "classes.dex" || { echo "Missing classes.dex"; exit 1; }
-          unzip -l "$APK" | grep -q "assets/public/index.html" || { echo "Missing web assets"; exit 1; }
-          echo "APK smoke test passed."
+          for APK in "${{ steps.apk.outputs.debug_apk }}" "${{ steps.apk.outputs.release_apk }}"; do
+            echo "Verifying $APK..."
+            unzip -l "$APK" | grep -q "AndroidManifest.xml" || { echo "Missing AndroidManifest.xml in $APK"; exit 1; }
+            unzip -l "$APK" | grep -q "classes.dex" || { echo "Missing classes.dex in $APK"; exit 1; }
+            unzip -l "$APK" | grep -q "assets/public/index.html" || { echo "Missing web assets in $APK"; exit 1; }
+            echo "$APK passed."
+          done
+          echo "Verifying release APK is signed..."
+          unzip -l "${{ steps.apk.outputs.release_apk }}" | grep -E "META-INF/.*\.(RSA|DSA|EC)" || { echo "Release APK is not signed"; exit 1; }
+          echo "Release APK is signed."
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: fb-guard-apk
-          path: ${{ steps.apk.outputs.apk_path }}
+          path: |
+            ${{ steps.apk.outputs.debug_apk }}
+            ${{ steps.apk.outputs.release_apk }}
           if-no-files-found: error
           retention-days: 30
 
@@ -144,12 +208,15 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             
-            - APK: ${{ steps.apk.outputs.apk_path }}
-            - Size: ${{ steps.apk.outputs.apk_size }}
+            - Release APK: ${{ steps.apk.outputs.release_apk }} (${{ steps.apk.outputs.apk_size }})
+            - Debug APK: ${{ steps.apk.outputs.debug_apk }}
             - Branch: ${{ github.ref_name }}
+            - Signed: ${{ steps.keystore.outputs.have_keystore == 'true' && 'with provided keystore' || 'with auto-generated keystore' }}
             
-            Download the APK from the assets below.
-          files: ${{ steps.apk.outputs.apk_path }}
+            Download the APK from the assets below and install on Android.
+          files: |
+            ${{ steps.apk.outputs.release_apk }}
+            ${{ steps.apk.outputs.debug_apk }}
           draft: false
           prerelease: false
         env:
@@ -161,7 +228,8 @@ jobs:
           echo "::notice title=APK Ready::Download at https://github.com/${{ github.repository }}/releases/tag/build-${{ github.run_number }}"
           echo ""
           echo "============================================"
-          echo "  APK DOWNLOAD URL"
+          echo "  APK DOWNLOAD URLS"
           echo "============================================"
-          echo "https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/${{ steps.apk.outputs.apk_path }}"
+          echo "Release: https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/${{ steps.apk.outputs.release_apk }}"
+          echo "Debug:   https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/${{ steps.apk.outputs.debug_apk }}"
           echo "============================================"
