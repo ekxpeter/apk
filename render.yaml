@@ -12,12 +12,15 @@ services:
     buildCommand: >
       npm install -g pnpm &&
       pnpm install &&
-      BASE_PATH=/ NODE_ENV=production pnpm --filter @workspace/fb-guard build &&
+      pnpm --filter @workspace/fb-guard build &&
       pnpm --filter @workspace/api-server build
     startCommand: node --enable-source-maps artifacts/api-server/dist/index.mjs
+    healthCheckPath: /api/healthz
     envVars:
       - key: NODE_ENV
         value: production
+      - key: BASE_PATH
+        value: /
       - key: DATABASE_URL
         fromDatabase:
           name: fb-guard-db
