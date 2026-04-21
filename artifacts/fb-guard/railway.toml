@@ -1,0 +1,12 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm install -g pnpm && pnpm install && BASE_PATH=/ NODE_ENV=production pnpm --filter @workspace/fb-guard build && npm install -g serve"
+
+[deploy]
+startCommand = "serve -s artifacts/fb-guard/dist/public -l $PORT"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[environments.production]
+NODE_ENV = "production"
+BASE_PATH = "/"

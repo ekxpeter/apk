@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: fb-guard-api
+    env: node
+    plan: free
+    buildCommand: npm install -g pnpm && pnpm install && pnpm --filter @workspace/api-server build
+    startCommand: node --enable-source-maps artifacts/api-server/dist/index.mjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PORT
+        value: 10000
+
+  - type: web
+    name: fb-guard-frontend
+    env: static
+    buildCommand: npm install -g pnpm && pnpm install && BASE_PATH=/ NODE_ENV=production pnpm --filter @workspace/fb-guard build
+    staticPublishPath: artifacts/fb-guard/dist/public
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BASE_PATH
+        value: /
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

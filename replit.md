@@ -49,4 +49,20 @@ Primary product is Facebook Guard, a web app with an Express API for Facebook ac
 - `fb_cookie_accounts` — Facebook session cookies per user, typed as fra/rpw/normal
 - `saved_sessions` — legacy Facebook sessions (for existing features)
 
+### Deployment
+
+**PORT** defaults to `3000` if not set. **BASE_PATH** defaults to `/` if not set. `NODE_ENV=production` enables HTTPS-only cookies and trust proxy.
+
+#### Vercel
+- **API**: Set root directory to `artifacts/api-server`. Uses `vercel.json` + `api/index.ts` serverless handler. Set env vars: `DATABASE_URL`, `SESSION_SECRET`, `NODE_ENV=production`.
+- **Frontend**: Set root directory to `artifacts/fb-guard`. Uses `vercel.json` for static build + SPA rewrites. Set env var: `VITE_API_URL` pointing to deployed API.
+
+#### Render.com
+- Use `render.yaml` at project root — deploys both API (web service) and frontend (static site) automatically.
+- Set `DATABASE_URL` in Render dashboard for the API service.
+
+#### Railway
+- **API**: Use `railway.toml` at root + `nixpacks.toml`. Set `DATABASE_URL` and `SESSION_SECRET` env vars.
+- **Frontend**: Set root directory to `artifacts/fb-guard`, uses `artifacts/fb-guard/railway.toml`.
+
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
