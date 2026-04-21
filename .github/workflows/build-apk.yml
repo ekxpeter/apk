@@ -84,8 +84,8 @@ jobs:
       - name: Install Capacitor packages
         working-directory: ${{ env.APP_DIR }}
         run: |
-          pnpm add -D @capacitor/cli@^6 -w=false || npm i -D @capacitor/cli@^6
-          npm i @capacitor/core@^6 @capacitor/android@^6
+          pnpm add -D @capacitor/cli@^6 --ignore-workspace-root-check
+          pnpm add @capacitor/core@^6 @capacitor/android@^6 --ignore-workspace-root-check
 
       - name: Add Android platform
         working-directory: ${{ env.APP_DIR }}
