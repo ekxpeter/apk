@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { Loader2, Lock, User, Facebook, CheckCircle } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 export default function Register() {
   const [, navigate] = useLocation();
@@ -20,7 +21,7 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      const res = await fetch("/api/auth/register", {
+      const res = await apiFetch("/api/auth/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",

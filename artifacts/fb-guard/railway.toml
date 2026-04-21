@@ -10,3 +10,4 @@ restartPolicyMaxRetries = 10
 [environments.production]
 NODE_ENV = "production"
 BASE_PATH = "/"
+VITE_API_URL = ""

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { Loader2, Lock, User, Facebook } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 export default function Login() {
   const [, navigate] = useLocation();
@@ -14,7 +15,7 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await apiFetch("/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",

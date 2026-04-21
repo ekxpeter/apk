@@ -8,6 +8,7 @@ import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import Dashboard from "@/pages/dashboard";
+import { apiFetch } from "@/lib/api";
 
 const queryClient = new QueryClient();
 
@@ -16,7 +17,7 @@ function AuthRedirect() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/me", { credentials: "include" })
+    apiFetch("/api/auth/me", { credentials: "include" })
       .then(r => {
         if (r.ok) navigate("/dashboard");
         else navigate("/login");

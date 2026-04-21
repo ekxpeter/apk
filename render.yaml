@@ -25,6 +25,8 @@ services:
         value: production
       - key: BASE_PATH
         value: /
+      - key: VITE_API_URL
+        sync: false
     routes:
       - type: rewrite
         source: /*

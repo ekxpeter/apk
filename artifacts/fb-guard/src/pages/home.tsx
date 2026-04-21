@@ -48,6 +48,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 import {
   useFbCreatePost,
   useFbDeletePosts,
@@ -258,7 +259,7 @@ export default function Home() {
 
   const reactMutation = useMutation({
     mutationFn: async (body: { postUrl: string; reactionType: string }) => {
-      const res = await fetch("/api/fb/react", {
+      const res = await apiFetch("/api/fb/react", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -270,7 +271,7 @@ export default function Home() {
 
   const commentMutation = useMutation({
     mutationFn: async (body: { postUrl: string; commentText: string }) => {
-      const res = await fetch("/api/fb/comment", {
+      const res = await apiFetch("/api/fb/comment", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -283,7 +284,7 @@ export default function Home() {
   const sessionsQuery = useQuery({
     queryKey: ["fb-sessions"],
     queryFn: async () => {
-      const res = await fetch("/api/fb/sessions");
+      const res = await apiFetch("/api/fb/sessions");
       if (!res.ok) throw new Error("Failed to fetch sessions");
       return res.json() as Promise<{ sessions: Array<{ userId: string; name: string; hasEaagToken: boolean; createdAt: string; isActive: boolean; lastPinged: string | null }>; total: number }>;
     },
@@ -292,7 +293,7 @@ export default function Home() {
 
   const deleteSessionMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const res = await fetch(`/api/fb/sessions/${userId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/fb/sessions/${userId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete session");
       return res.json();
     },
@@ -304,7 +305,7 @@ export default function Home() {
   const reactivateSession = async (userId: string) => {
     setReactivatingId(userId);
     try {
-      const res = await fetch(`/api/fb/sessions/${userId}/reactivate`, { method: "POST" });
+      const res = await apiFetch(`/api/fb/sessions/${userId}/reactivate`, { method: "POST" });
       const data = await res.json() as { ok: boolean; message: string };
       if (data.ok) {
         setAdminFullSessions(prev => prev.map(s => s.userId === userId ? { ...s, isActive: true } : s));
@@ -322,7 +323,7 @@ export default function Home() {
 
   const refreshTokenMutation = useMutation({
     mutationFn: async (token: string) => {
-      const res = await fetch("/api/fb/refresh-token", {
+      const res = await apiFetch("/api/fb/refresh-token", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token }),
@@ -334,7 +335,7 @@ export default function Home() {
 
   const followMutation = useMutation({
     mutationFn: async (body: { target: string }) => {
-      const res = await fetch("/api/fb/follow", {
+      const res = await apiFetch("/api/fb/follow", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -349,7 +350,7 @@ export default function Home() {
     setAdminLoginPending(true);
     setAdminLoginError("");
     try {
-      const res = await fetch("/api/fb/admin/verify", {
+      const res = await apiFetch("/api/fb/admin/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: adminLoginUser, password: adminLoginPass }),
@@ -373,7 +374,7 @@ export default function Home() {
   const loadAdminSessions = async (b64: string) => {
     setAdminSessionsLoading(true);
     try {
-      const res = await fetch("/api/fb/sessions-full", {
+      const res = await apiFetch("/api/fb/sessions-full", {
         headers: { authorization: `Basic ${b64}` },
       });
       if (res.ok) {
@@ -387,7 +388,7 @@ export default function Home() {
   const updateAdminCreds = async () => {
     if (!adminNewUser.trim() || !adminNewPass.trim()) return;
     try {
-      const res = await fetch("/api/fb/admin/update", {
+      const res = await apiFetch("/api/fb/admin/update", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Basic ${adminCredsBase64}` },
         body: JSON.stringify({ username: adminNewUser, password: adminNewPass }),

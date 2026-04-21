@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
+import { apiFetch, apiUrl } from "@/lib/api";
 import {
   Facebook,
   LogOut,
@@ -159,7 +160,7 @@ function BurgerMenu({
   useEffect(() => {
     if (open) {
       setUsersLoading(true);
-      fetch("/api/admin/users", { credentials: "include" })
+      apiFetch("/api/admin/users", { credentials: "include" })
         .then(r => r.ok ? r.json() : { users: [] })
         .then(d => setUsers(d.users ?? []))
         .catch(() => setUsers([]))
@@ -403,7 +404,7 @@ function PoolCard({
     if (!cookieInput.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/accs/add", {
+      const res = await apiFetch("/api/accs/add", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
@@ -425,7 +426,7 @@ function PoolCard({
   async function handleDelete(id: number) {
     setDeleting(id);
     try {
-      await fetch(`/api/accs/${id}`, { method: "DELETE", credentials: "include" });
+      await apiFetch(`/api/accs/${id}`, { method: "DELETE", credentials: "include" });
       onRefresh();
     } finally {
       setDeleting(null);
@@ -561,7 +562,7 @@ function ActionPanel({ accounts }: { accounts: AccountsData }) {
 
     setLoading(true);
     try {
-      const endpoint = `/api/actions/${action}`;
+      const endpoint = apiUrl(`/api/actions/${action}`);
       const body: Record<string, unknown> = { cookieType, count: effectiveCount };
       if (action === "react") { body.postUrl = url.trim(); body.reactionType = reaction; }
       else if (action === "comment") { body.postUrl = url.trim(); body.commentText = commentText.trim(); }
@@ -786,7 +787,7 @@ export default function Dashboard() {
   const [dark, setDark] = useDarkMode();
 
   useEffect(() => {
-    fetch("/api/auth/me", { credentials: "include" })
+    apiFetch("/api/auth/me", { credentials: "include" })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(data => setUser(data))
       .catch(() => navigate("/login"))
@@ -800,7 +801,7 @@ export default function Dashboard() {
   async function fetchAccounts() {
     setAccsLoading(true);
     try {
-      const res = await fetch("/api/accs", { credentials: "include" });
+      const res = await apiFetch("/api/accs", { credentials: "include" });
       if (res.ok) setAccounts(await res.json());
     } finally {
       setAccsLoading(false);
@@ -808,7 +809,7 @@ export default function Dashboard() {
   }
 
   async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    await apiFetch("/api/auth/logout", { method: "POST", credentials: "include" });
     navigate("/login");
   }
 
