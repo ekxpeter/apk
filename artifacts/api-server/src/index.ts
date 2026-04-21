@@ -76,16 +76,10 @@ app.listen(port, (err) => {
   }
   logger.info({ port }, "Server listening");
 
-  if (!process.env.DATABASE_URL) {
-    logger.warn(
-      "DATABASE_URL is not set — database features are unavailable. " +
-      "Add a PostgreSQL service and set DATABASE_URL, then redeploy.",
-    );
-    return;
-  }
-
   ensureTablesExist()
-    .then(() => startKeepAliveJob())
+    .then(() => {
+      if (process.env.DATABASE_URL) startKeepAliveJob();
+    })
     .catch((err) => {
       logger.error({ err }, "Database setup failed — server is running but DB features may not work");
     });

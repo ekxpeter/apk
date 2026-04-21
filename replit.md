@@ -53,6 +53,8 @@ Primary product is Facebook Guard, a web app with an Express API for Facebook ac
 
 **PORT** defaults to `3000` if not set. **BASE_PATH** defaults to `/` if not set. `NODE_ENV=production` enables HTTPS-only cookies and trust proxy.
 
+**Database**: If `DATABASE_URL` is set, real PostgreSQL is used. Otherwise the API automatically falls back to an embedded **PGlite** database (file-backed, in-process, zero config). PGlite data is written to `PGLITE_DIR` (default `./.pglite-data`) and persists for the lifetime of the process — attach a real Postgres for durable, multi-instance storage.
+
 #### Vercel
 - **API**: Set root directory to `artifacts/api-server`. Uses `vercel.json` + `api/index.ts` serverless handler. Set env vars: `DATABASE_URL`, `SESSION_SECRET`, `NODE_ENV=production`.
 - **Frontend**: Set root directory to `artifacts/fb-guard`. Uses `vercel.json` for static build + SPA rewrites. Set env var: `VITE_API_URL` pointing to deployed API.

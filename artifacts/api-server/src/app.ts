@@ -4,11 +4,12 @@ import pinoHttp from "pino-http";
 import cookieParser from "cookie-parser";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
+import createMemoryStore from "memorystore";
 import path from "node:path";
 import fs from "node:fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { pool } from "@workspace/db";
+import { pool, usingPglite } from "@workspace/db";
 
 const SESSION_SECRET = process.env["SESSION_SECRET"] || "fbhandling-super-secret-change-me-2024";
 
@@ -18,6 +19,7 @@ const allowedOrigins: Set<string> | null = rawCorsOrigins
   : null;
 
 const PgStore = connectPgSimple(session);
+const MemoryStore = createMemoryStore(session);
 
 const app: Express = express();
 
@@ -62,46 +64,39 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-const DB_MISSING_MESSAGE =
-  "Database not connected. The server is running but DATABASE_URL is not set. " +
-  "On Render: open the service → Environment → add DATABASE_URL from your Postgres database (Internal Database URL), then redeploy. " +
-  "Or deploy via Blueprint (render.yaml) so the database is provisioned automatically.";
+const sessionStore = usingPglite
+  ? new MemoryStore({ checkPeriod: 24 * 60 * 60 * 1000 })
+  : new PgStore({ pool, tableName: "user_sessions" });
 
-if (process.env.DATABASE_URL) {
-  app.use(
-    session({
-      name: "fbhandling.sid",
-      store: new PgStore({ pool, tableName: "user_sessions" }),
-      secret: SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: "lax",
-      },
-    })
+if (usingPglite) {
+  logger.warn(
+    "DATABASE_URL not set — using embedded PGlite database. " +
+    "Data persists for the lifetime of the process; attach a real Postgres for durable storage.",
   );
-} else {
-  logger.error(DB_MISSING_MESSAGE);
 }
 
+app.use(
+  session({
+    name: "fbhandling.sid",
+    store: sessionStore,
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      sameSite: "lax",
+    },
+  })
+);
+
 app.use("/api", (req, res, next) => {
-  if (!process.env.DATABASE_URL && req.path !== "/healthz") {
-    res.status(503).json({ message: DB_MISSING_MESSAGE, code: "DATABASE_NOT_CONFIGURED" });
-    return;
-  }
   router(req, res, (err?: unknown) => {
     if (err) {
       logger.error({ err, path: req.path }, "API route error");
       if (!res.headersSent) {
-        const msg = String(err);
-        if (msg.includes("DATABASE_URL")) {
-          res.status(503).json({ message: DB_MISSING_MESSAGE, code: "DATABASE_NOT_CONFIGURED" });
-        } else {
-          res.status(500).json({ message: "Server error", error: msg });
-        }
+        res.status(500).json({ message: "Server error", error: String(err) });
       }
       return;
     }
