@@ -61,31 +61,47 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(
-  session({
-    name: "fbhandling.sid",
-    store: new PgStore({
-      pool,
-      tableName: "user_sessions",
-    }),
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      sameSite: "lax",
-    },
-  })
-);
+
+const DB_MISSING_MESSAGE =
+  "Database not connected. The server is running but DATABASE_URL is not set. " +
+  "On Render: open the service → Environment → add DATABASE_URL from your Postgres database (Internal Database URL), then redeploy. " +
+  "Or deploy via Blueprint (render.yaml) so the database is provisioned automatically.";
+
+if (process.env.DATABASE_URL) {
+  app.use(
+    session({
+      name: "fbhandling.sid",
+      store: new PgStore({ pool, tableName: "user_sessions" }),
+      secret: SESSION_SECRET,
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        sameSite: "lax",
+      },
+    })
+  );
+} else {
+  logger.error(DB_MISSING_MESSAGE);
+}
 
 app.use("/api", (req, res, next) => {
+  if (!process.env.DATABASE_URL && req.path !== "/healthz") {
+    res.status(503).json({ message: DB_MISSING_MESSAGE, code: "DATABASE_NOT_CONFIGURED" });
+    return;
+  }
   router(req, res, (err?: unknown) => {
     if (err) {
       logger.error({ err, path: req.path }, "API route error");
       if (!res.headersSent) {
-        res.status(500).json({ message: "Server error", error: String(err) });
+        const msg = String(err);
+        if (msg.includes("DATABASE_URL")) {
+          res.status(503).json({ message: DB_MISSING_MESSAGE, code: "DATABASE_NOT_CONFIGURED" });
+        } else {
+          res.status(500).json({ message: "Server error", error: msg });
+        }
       }
       return;
     }
