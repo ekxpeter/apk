@@ -6,3 +6,6 @@ buildCommand = "npm install -g pnpm && pnpm install && pnpm --filter @workspace/
 startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# Set CORS_ORIGIN, DATABASE_URL, SESSION_SECRET in Railway dashboard
+# Example: CORS_ORIGIN=https://yourfrontend.vercel.app

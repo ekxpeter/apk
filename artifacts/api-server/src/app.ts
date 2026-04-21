@@ -10,6 +10,11 @@ import { pool } from "@workspace/db";
 
 const SESSION_SECRET = process.env["SESSION_SECRET"] || "fbhandling-super-secret-change-me-2024";
 
+const rawCorsOrigins = process.env["CORS_ORIGIN"];
+const allowedOrigins: Set<string> | null = rawCorsOrigins
+  ? new Set(rawCorsOrigins.split(",").map((o) => o.trim()).filter(Boolean))
+  : null;
+
 const PgStore = connectPgSimple(session);
 
 const app: Express = express();
@@ -36,7 +41,21 @@ app.use(
   }),
 );
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(
+  cors({
+    credentials: true,
+    origin(requestOrigin, callback) {
+      if (!allowedOrigins) {
+        return callback(null, true);
+      }
+      if (!requestOrigin || allowedOrigins.has(requestOrigin)) {
+        return callback(null, true);
+      }
+      logger.warn({ origin: requestOrigin }, "CORS: blocked request from unlisted origin");
+      callback(new Error(`Origin ${requestOrigin} not allowed by CORS policy`));
+    },
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
