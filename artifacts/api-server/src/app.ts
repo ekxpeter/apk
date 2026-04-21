@@ -80,17 +80,35 @@ app.use(
   })
 );
 
-app.use("/api", router);
+app.use("/api", (req, res, next) => {
+  router(req, res, (err?: unknown) => {
+    if (err) {
+      logger.error({ err, path: req.path }, "API route error");
+      if (!res.headersSent) {
+        res.status(500).json({ message: "Server error", error: String(err) });
+      }
+      return;
+    }
+    if (!res.headersSent) {
+      res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
+    }
+  });
+});
 
-const frontendDist = path.resolve(__dirname, "../../fb-guard/dist/public");
-if (fs.existsSync(frontendDist)) {
+const frontendCandidates = [
+  path.resolve(__dirname, "../../fb-guard/dist/public"),
+  path.resolve(process.cwd(), "artifacts/fb-guard/dist/public"),
+];
+const frontendDist = frontendCandidates.find((p) => fs.existsSync(p));
+
+if (frontendDist) {
   app.use(express.static(frontendDist));
-  app.use((_req, res) => {
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
     res.sendFile(path.join(frontendDist, "index.html"));
   });
   logger.info({ frontendDist }, "Serving frontend static files");
 } else {
-  logger.warn({ frontendDist }, "Frontend build not found — only API routes active");
+  logger.warn({ tried: frontendCandidates }, "Frontend build not found — only API routes active");
 }
 
 export default app;
