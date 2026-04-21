@@ -6,6 +6,3 @@ buildCommand = "npm install -g pnpm && pnpm install && pnpm --filter @workspace/
 startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-
-[environments.production]
-NODE_ENV = "production"

@@ -1,2 +1,1 @@
-import app from "../src/app";
-export default app;
+export { default } from "../dist/vercel.mjs";

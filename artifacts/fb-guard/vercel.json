@@ -5,16 +5,5 @@
   "outputDirectory": "dist/public",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "env": {
-    "NODE_ENV": "production",
-    "BASE_PATH": "/"
-  },
-  "build": {
-    "env": {
-      "NODE_ENV": "production",
-      "BASE_PATH": "/",
-      "VITE_API_URL": "@vite_api_url"
-    }
-  }
+  ]
 }
