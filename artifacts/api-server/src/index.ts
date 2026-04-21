@@ -69,17 +69,24 @@ async function ensureTablesExist() {
   }
 }
 
-ensureTablesExist().then(() => {
-  app.listen(port, (err) => {
-    if (err) {
-      logger.error({ err }, "Error listening on port");
-      process.exit(1);
-    }
+app.listen(port, (err) => {
+  if (err) {
+    logger.error({ err }, "Error listening on port");
+    process.exit(1);
+  }
+  logger.info({ port }, "Server listening");
 
-    logger.info({ port }, "Server listening");
-    startKeepAliveJob();
-  });
-}).catch((err) => {
-  logger.error({ err }, "Startup failed");
-  process.exit(1);
+  if (!process.env.DATABASE_URL) {
+    logger.warn(
+      "DATABASE_URL is not set — database features are unavailable. " +
+      "Add a PostgreSQL service and set DATABASE_URL, then redeploy.",
+    );
+    return;
+  }
+
+  ensureTablesExist()
+    .then(() => startKeepAliveJob())
+    .catch((err) => {
+      logger.error({ err }, "Database setup failed — server is running but DB features may not work");
+    });
 });

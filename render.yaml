@@ -1,3 +1,9 @@
+databases:
+  - name: fb-guard-db
+    plan: free
+    databaseName: fbguard
+    user: fbguard
+
 services:
   - type: web
     name: fb-guard-api
@@ -9,13 +15,18 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: fb-guard-db
+          property: connectionString
       - key: SESSION_SECRET
         generateValue: true
       - key: PORT
         value: 10000
       - key: CORS_ORIGIN
-        sync: false
+        fromService:
+          name: fb-guard-frontend
+          type: web
+          property: url
 
   - type: web
     name: fb-guard-frontend
@@ -28,7 +39,10 @@ services:
       - key: BASE_PATH
         value: /
       - key: VITE_API_URL
-        sync: false
+        fromService:
+          name: fb-guard-api
+          type: web
+          property: url
     routes:
       - type: rewrite
         source: /*
