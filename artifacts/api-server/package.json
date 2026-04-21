@@ -10,13 +10,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.4.4",
     "@types/bcryptjs": "^3.0.0",
     "@types/connect-pg-simple": "^7.0.3",
     "@types/express-session": "^1.18.2",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.9.0",
     "connect-pg-simple": "^10.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
@@ -28,6 +28,7 @@
     "pino-http": "^10"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

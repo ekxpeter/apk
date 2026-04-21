@@ -8,7 +8,7 @@ router.get("/healthz", (_req, res) => {
   const data = HealthCheckResponse.parse({ status: "ok" });
   res.status(200).json({
     ...data,
-    db: usingPglite ? "embedded-pglite" : "postgres",
+    db: usingPglite ? "embedded-sqlite" : "postgres",
   });
 });
 

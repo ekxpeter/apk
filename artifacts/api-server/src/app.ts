@@ -70,7 +70,7 @@ const sessionStore = usingPglite
 
 if (usingPglite) {
   logger.warn(
-    "DATABASE_URL not set — using embedded PGlite database. " +
+    "DATABASE_URL not set — using embedded SQLite database. " +
     "Data persists for the lifetime of the process; attach a real Postgres for durable storage.",
   );
 }

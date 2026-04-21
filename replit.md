@@ -53,7 +53,7 @@ Primary product is Facebook Guard, a web app with an Express API for Facebook ac
 
 **PORT** defaults to `3000` if not set. **BASE_PATH** defaults to `/` if not set. `NODE_ENV=production` enables HTTPS-only cookies and trust proxy.
 
-**Database**: If `DATABASE_URL` is set, real PostgreSQL is used. Otherwise the API automatically falls back to an embedded **PGlite** database (file-backed, in-process, zero config). PGlite data is written to `PGLITE_DIR` (default `./.pglite-data`) and persists for the lifetime of the process — attach a real Postgres for durable, multi-instance storage.
+**Database**: If `DATABASE_URL` is set, real PostgreSQL is used. Otherwise the API automatically falls back to an embedded **SQLite** database (better-sqlite3, file-backed, in-process, zero config). SQLite file is written to `SQLITE_DIR/app.db` (default `./.sqlite-data/app.db`). A small adapter in `lib/db/src/index.ts` translates Postgres-style queries (`$1` placeholders, `serial`, `timestamptz`, `boolean`, `now()`, `IF NOT EXISTS` on column adds, etc.) so all `pool.query()` call sites work unchanged. Drizzle ORM (`db.*`) is only available in real-Postgres mode; SQLite mode supports the auth + cookie-account flows that use raw `pool.query`. Sessions automatically switch to in-memory `memorystore` in SQLite mode.
 
 #### Vercel
 - **API**: Set root directory to `artifacts/api-server`. Uses `vercel.json` + `api/index.ts` serverless handler. Set env vars: `DATABASE_URL`, `SESSION_SECRET`, `NODE_ENV=production`.
