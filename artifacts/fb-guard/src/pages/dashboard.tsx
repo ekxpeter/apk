@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { getLocalSession, clearLocalSession } from "@/lib/localAuth";
 import {
   Facebook,
   LogOut,
@@ -102,7 +103,7 @@ const TYPE_META: Record<CookieType, { label: string; color: string; bg: string; 
     darkColor: "dark:text-purple-300",
   },
   rpw: {
-    label: "RPW",
+    label: "Reaction",
     color: "text-amber-700",
     bg: "bg-amber-50",
     border: "border-amber-200",
@@ -330,7 +331,7 @@ function BurgerMenu({
                         "Mass reaction automation (LIKE/LOVE/HAHA/WOW/SAD/ANGRY)",
                         "Mass comment posting",
                         "Mass page/profile follow",
-                        "FRA, RPW & Normal cookie pools",
+                        "FRA, Reaction & Normal cookie pools",
                         "Persistent sessions across restarts",
                         "Multi-user panel support",
                       ].map((f, i) => (
@@ -787,11 +788,41 @@ export default function Dashboard() {
   const [dark, setDark] = useDarkMode();
 
   useEffect(() => {
+    let done = false;
+    const fallback = () => {
+      if (done) return;
+      const local = getLocalSession();
+      if (local) {
+        setUser({ id: 0, username: local.username });
+      } else {
+        navigate("/login");
+      }
+      setAuthLoading(false);
+      done = true;
+    };
+    const timer = setTimeout(fallback, 3000);
     apiFetch("/api/auth/me", { credentials: "include" })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => setUser(data))
-      .catch(() => navigate("/login"))
-      .finally(() => setAuthLoading(false));
+      .then(async r => {
+        clearTimeout(timer);
+        if (done) return;
+        if (r.ok) {
+          try {
+            const data = await r.json();
+            if (data && typeof data === "object" && "username" in data) {
+              setUser(data);
+              setAuthLoading(false);
+              done = true;
+              return;
+            }
+          } catch {}
+        }
+        fallback();
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        fallback();
+      });
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -809,7 +840,10 @@ export default function Dashboard() {
   }
 
   async function handleLogout() {
-    await apiFetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    try {
+      await apiFetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    } catch {}
+    clearLocalSession();
     navigate("/login");
   }
 

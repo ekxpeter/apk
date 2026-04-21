@@ -24,7 +24,7 @@ export default function SplashIntro({ onDone }: { onDone: () => void }) {
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-br from-[#1877F2] via-[#1565C0] to-[#0D47A1] transition-opacity duration-300 ${
+      className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-300 ${
         exiting ? "opacity-0" : "opacity-100"
       }`}
     >

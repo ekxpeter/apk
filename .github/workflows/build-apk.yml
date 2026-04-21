@@ -84,14 +84,24 @@ jobs:
       - name: Install Capacitor packages
         working-directory: ${{ env.APP_DIR }}
         run: |
-          pnpm add -D @capacitor/cli@^6 --ignore-workspace-root-check
-          pnpm add @capacitor/core@^6 @capacitor/android@^6 --ignore-workspace-root-check
+          pnpm add -D @capacitor/cli@^6 @capacitor/assets@^3 --ignore-workspace-root-check
+          pnpm add @capacitor/core@^6 @capacitor/android@^6 @capacitor/splash-screen@^6 @capacitor/status-bar@^6 --ignore-workspace-root-check
 
       - name: Add Android platform
         working-directory: ${{ env.APP_DIR }}
         run: |
           if [ ! -d "android" ]; then
             npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Generate Android icons & splash from resources/
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          if [ -f resources/icon.png ]; then
+            npx @capacitor/assets generate --android --iconBackgroundColor "#000000" --iconBackgroundColorDark "#000000" --splashBackgroundColor "#000000" --splashBackgroundColorDark "#000000" || echo "asset generation finished with warnings"
+          else
+            echo "No resources/icon.png found, skipping icon generation"
           fi
           npx cap sync android
 
