@@ -1,8 +1,0 @@
-[build]
-builder = "NIXPACKS"
-buildCommand = "cd ../../ && npm install -g pnpm && pnpm install && BASE_PATH=/ NODE_ENV=production VITE_API_URL=$VITE_API_URL pnpm --filter @workspace/fb-guard build && npm install -g serve"
-
-[deploy]
-startCommand = "serve -s dist/public -l $PORT"
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10
